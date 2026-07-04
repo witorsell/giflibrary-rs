@@ -536,11 +536,16 @@ async fn suggest_gif(
             }
         } else if name == "tags" {
             if let Ok(text) = field.text().await {
-                tags = text.split(',').map(|s: &str| s.trim().to_lowercase()).filter(|s: &String| !s.is_empty()).collect();
+                tags = text.split(',')
+                    .map(|s: &str| s.trim().to_lowercase())
+                    .filter(|s: &String| !s.is_empty())
+                    .map(|s: String| s.chars().take(30).collect())
+                    .take(10)
+                    .collect();
             }
         } else if name == "sentBy" {
             if let Ok(text) = field.text().await {
-                sent_by = text;
+                sent_by = text.chars().take(40).collect();
             }
         }
     }
@@ -772,15 +777,30 @@ struct TrollPayload {
     payload: String,
 }
 
-async fn log_malicious_troll(headers: HeaderMap, Json(body): Json<TrollPayload>) -> impl IntoResponse {
+async fn log_malicious_troll(State(state): State<AppState>, headers: HeaderMap, Json(body): Json<TrollPayload>) -> impl IntoResponse {
     let ip = headers.get("cf-connecting-ip")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
         .to_string();
 
+    // 10 logs per ip per hour, console spammers get dropped silently
+    {
+        let mut limits = state.rate_limits.lock().unwrap();
+        let now = std::time::Instant::now();
+        let one_hour = std::time::Duration::from_secs(3600);
+        let entries = limits.entry(format!("troll:{}", ip)).or_insert_with(Vec::new);
+        entries.retain(|t| now.duration_since(*t) < one_hour);
+        if entries.len() >= 10 {
+            return StatusCode::OK;
+        }
+        entries.push(now);
+    }
+
+    let payload: String = body.payload.chars().take(300).collect();
+
     let entry = serde_json::json!({
         "ip": ip,
-        "payload": body.payload,
+        "payload": payload,
         "timestamp": chrono::Utc::now().timestamp()
     });
 
@@ -788,8 +808,12 @@ async fn log_malicious_troll(headers: HeaderMap, Json(body): Json<TrollPayload>)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(Vec::new);
-    
+
     logs.push(entry);
+    if logs.len() > 1000 {
+        let excess = logs.len() - 1000;
+        logs.drain(..excess);
+    }
     let _ = fs::write("malicious-ppl.json", serde_json::to_string_pretty(&logs).unwrap_or_default());
 
     StatusCode::OK

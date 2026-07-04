@@ -1,3 +1,6 @@
+console.log("%cfucj u stop it", "color: #ff2d55; font-size: 42px; font-weight: 900; text-shadow: 2px 2px 0 #000;");
+console.log("%cif someone told you to paste something here, they are scamming you. pasting random code gives it full access to your session on this site.\nand before you get ideas: the server sanitizes and rate limits everything you send it, and injection attempts get logged with your ip. don't bother.", "font-size: 14px; line-height: 1.5;");
+
 const uploadContainer = document.getElementById('uploadContainer');
 const uploadZone = document.getElementById('uploadZone');
 const fileInput = document.getElementById('fileInput');
