@@ -737,6 +737,20 @@ async function loadSuggestions() {
   }
 }
 
+const tosModal = document.getElementById('tosModal');
+const tosAgreeBtn = document.getElementById('tosAgreeBtn');
+
+if (tosModal && !localStorage.getItem('tos_agreed')) {
+  tosModal.style.display = 'flex';
+}
+
+if (tosAgreeBtn) {
+  tosAgreeBtn.addEventListener('click', () => {
+    localStorage.setItem('tos_agreed', '1');
+    tosModal.style.display = 'none';
+  });
+}
+
 const trollModal = document.getElementById('trollModal');
 const trollSorryBtn = document.getElementById('trollSorryBtn');
 const trollDefiantBtn = document.getElementById('trollDefiantBtn');
