@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>about & legal - giflibrary</title>
+  <meta name="theme-color" content="#ccff00">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    body { padding: 40px 20px; max-width: 800px; margin: 0 auto; color: var(--text-secondary); }
+    h1 { color: var(--text-primary); font-size: 32px; margin-bottom: 32px; letter-spacing: -1px; text-align: center; }
+    h2 { color: var(--text-primary); font-size: 20px; margin-top: 32px; margin-bottom: 16px; letter-spacing: -0.5px; }
+    p { font-size: 15px; line-height: 1.6; margin-bottom: 16px; }
+    .content-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px; margin-bottom: 32px; }
+    a.contact-btn { display: inline-block; background: var(--primary-color); color: var(--bg-color); padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; margin-top: 16px; transition: opacity 0.2s; }
+    a.contact-btn:hover { opacity: 0.9; }
+    a.back-link { display: block; text-align: center; color: var(--text-secondary); text-decoration: none; font-size: 14px; margin-top: 24px; transition: color 0.2s; }
+    a.back-link:hover { color: var(--text-primary); }
+  </style>
+</head>
+<body>
+  <h1>legal stuff & about</h1>
+  
+  <div class="content-box">
+    <h2>about this library</h2>
+    <p>this is a private, personal library used for storing and organizing gifs and media. it's not a public platform, and access is restricted. all uploads are monitored, but with the volume of content, we might not catch everything instantly.</p>
+
+    <h2>terms of service (tos)</h2>
+    <p>by accessing this site, you agree to these terms. you must be 18+ or the legal age in your country to view the content here. you agree not to scrape, ddos, or exploit the infrastructure. the administrator reserves the right to block access to anyone for any reason without notice.</p>
+
+    <h2>privacy policy (pp)</h2>
+    <p>we respect your privacy. we do not sell your data or track you across the web. basic analytics and server logs (like ip addresses and user agents) are kept temporarily for security and debugging purposes to keep the site running smoothly. cookies are only used to save your site preferences (like the nsfw toggle state).</p>
+
+    <h2>removals & legal</h2>
+    <p>if you believe a specific file hosted here violates the law, copyrights, or host policies, please reach out for its immediate removal. if you believe something here violates something, just word it well and explain why. we comply fully with valid takedown requests for illegal content. by using this site, you accept full responsibility for any content you choose to view.<br><br>contact: <a href="mailto:{{CONTACT_EMAIL}}" style="color: #00e5ff; text-decoration: underline; text-shadow: 0 0 8px rgba(0,229,255,0.3); font-weight: 600;">{{CONTACT_EMAIL}}</a></p>
+  </div>
+
+  <a href="/" class="back-link">← back to library</a>
+</body>
+</html>

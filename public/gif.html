@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{tags_text} | GIF Library</title>
+  <meta name="theme-color" content="#080808">
+  
+  <meta property="og:type" content="video.other">
+  <meta property="og:url" content="{site_url}">
+  <meta property="og:title" content="{slug}">
+  <meta property="og:description" content="View this GIF on giflibrary.site">
+  <meta property="og:image" content="{raw_url}">
+  <meta property="og:video" content="{raw_url}">
+  <meta property="og:video:type" content="image/webp">
+  <meta property="og:video:width" content="480">
+  <meta property="og:video:height" content="480">
+  
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="{site_url}">
+  <meta name="twitter:title" content="{slug}">
+  <meta name="twitter:description" content="View this on giflibrary.site">
+  <meta name="twitter:image" content="{raw_url}">
+  <meta name="twitter:player" content="{raw_url}">
+  
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-color: #080808;
+      --panel-bg: #121212;
+      --text-primary: #ffffff;
+      --text-secondary: #888888;
+      --border: #1f1f1f;
+      --radius: 16px;
+      --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-color); color: var(--text-primary); font-family: var(--font-family);
+      display: flex; flex-direction: column; align-items: center; min-height: 100vh; -webkit-font-smoothing: antialiased;
+    }
+    .navbar { width: 100%; max-width: 1600px; padding: 40px 20px; display: flex; align-items: center; }
+    .logo { font-size: 32px; font-weight: 700; letter-spacing: -1.5px; color: var(--text-primary); text-decoration: none; }
+    .logo span { color: var(--text-secondary); font-weight: 400; }
+    .container { width: 100%; max-width: 900px; padding: 20px; display: flex; flex-direction: column; align-items: center; margin-top: 20px; }
+    .gif-wrapper { background: var(--panel-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; width: 100%; max-width: 600px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+    .gif-wrapper img { width: 100%; display: block; border-radius: 8px; {filter_style} }
+    .tags-container { margin-top: 30px; width: 100%; max-width: 600px; text-align: center; }
+    .tags { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+    .tag { background: var(--panel-bg); border: 1px solid var(--border); color: var(--text-secondary); padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 500; text-transform: lowercase; transition: all 0.2s; }
+    .tag::before { content: "#"; opacity: 0.5; }
+    .actions { margin-top: 40px; display: flex; gap: 12px; justify-content: center; width: 100%; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; padding: 12px 24px; border-radius: 12px; font-weight: 600; font-size: 14px; cursor: pointer; border: 1px solid var(--border); font-family: var(--font-family); transition: all 0.2s; }
+    .btn-primary { background: var(--text-primary); color: var(--bg-color); border-color: var(--text-primary); }
+    .btn-primary:hover { background: var(--text-secondary); border-color: var(--text-secondary); }
+    .btn-secondary { background: transparent; color: var(--text-secondary); }
+    .btn-secondary:hover { background: var(--border); color: var(--text-primary); }
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(100px); background: var(--text-primary); color: var(--bg-color); padding: 14px 28px; border-radius: 30px; font-weight: 600; font-size: 14px; opacity: 0; transition: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55); z-index: 10000; }
+    .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+  </style>
+</head>
+<body>
+  <nav class="navbar"><a href="/" class="logo">gif<span>library</span></a></nav>
+  <div class="container">
+    <div class="gif-wrapper"><img src="{raw_url}" alt="{tags_text}"></div>
+    <div class="tags-container"><div class="tags">{tags_html}</div></div>
+    <div class="actions">
+      <button class="btn btn-primary" onclick="copyLink()">copy link</button>
+      <a href="/" class="btn btn-secondary">back to library</a>
+    </div>
+  </div>
+  <div id="toast" class="toast">Link copied</div>
+  <script>
+    function copyLink() {{
+      const url = window.location.origin + '/gif/{slug}.webp';
+      navigator.clipboard.writeText(url).then(() => {{
+        const toast = document.getElementById('toast');
+        toast.classList.add('show');
+        setTimeout(() => toast.classList.remove('show'), 2000);
+      }}).catch(err => console.error('Failed to copy', err));
+    }}
+  </script>
+</body>
+</html>

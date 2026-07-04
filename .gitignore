@@ -1,0 +1,7 @@
+/target
+.env
+*.json
+!package.json
+!tsconfig.json
+!Cargo.toml
+!Cargo.lock

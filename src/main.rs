@@ -1,0 +1,834 @@
+use axum::{
+    extract::{DefaultBodyLimit, Path, Query, State},
+    http::{header, HeaderMap, StatusCode},
+    response::{Html, IntoResponse},
+    routing::{delete, get, post, put},
+    Json, Router,
+};
+use axum_extra::extract::cookie::{Cookie, CookieJar};
+use axum_extra::extract::Multipart;
+use aws_config::BehaviorVersion;
+use aws_sdk_s3::{Client as S3Client, config::Credentials};
+use dotenvy::dotenv;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    fs,
+    net::SocketAddr,
+    process::Command,
+    sync::Arc,
+};
+use tokio::sync::Mutex;
+use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
+
+#[derive(Clone)]
+struct AppState {
+    s3: S3Client,
+    bucket: String,
+    master_key: String,
+    r2_public_url: String,
+    db_mutex: Arc<Mutex<()>>,
+    rate_limits: Arc<std::sync::Mutex<HashMap<String, Vec<std::time::Instant>>>>,
+    global_uploads: Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
+    cached_gifs: Arc<Mutex<Option<Vec<(String, i64, i64)>>>>,
+}
+
+#[derive(Serialize, Clone)]
+struct GifItem {
+    key: String,
+    url: String,
+    #[serde(rename = "lastModified")]
+    last_modified: String,
+    size: i64,
+    tags: Vec<String>,
+    slug: String,
+    #[serde(rename = "shortKey")]
+    short_key: String,
+    #[serde(rename = "isNsfwPlaceholder", skip_serializing_if = "Option::is_none")]
+    is_nsfw_placeholder: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Suggestion {
+    tags: Vec<String>,
+    #[serde(rename = "sentBy")]
+    sent_by: String,
+    date: i64,
+}
+
+#[derive(Deserialize)]
+struct Dim {
+    w: f64,
+    h: f64,
+}
+
+fn get_dims_db() -> HashMap<String, Dim> {
+    let path = "dimensions.json";
+    if let Ok(data) = fs::read_to_string(path) {
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        HashMap::new()
+    }
+}
+
+fn hash_string(s: &str) -> i32 {
+    let mut hash: i32 = 0;
+    for c in s.chars() {
+        hash = (c as i32).wrapping_add((hash << 5).wrapping_sub(hash));
+    }
+    hash
+}
+
+fn get_db() -> HashMap<String, Vec<String>> {
+    let path = "data.json";
+    if let Ok(data) = fs::read_to_string(path) {
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        HashMap::new()
+    }
+}
+
+fn save_db(db: &HashMap<String, Vec<String>>) {
+    if let Ok(json) = serde_json::to_string_pretty(db) {
+        let _ = fs::write("data.json", json);
+    }
+}
+
+fn get_suggestions_db() -> HashMap<String, Suggestion> {
+    let path = "suggestions.json";
+    if let Ok(data) = fs::read_to_string(path) {
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        HashMap::new()
+    }
+}
+
+fn save_suggestions_db(db: &HashMap<String, Suggestion>) {
+    if let Ok(json) = serde_json::to_string_pretty(db) {
+        let _ = fs::write("suggestions.json", json);
+    }
+}
+
+fn convert_to_webp(tmp_in: &str, tmp_out: &str, content_type: &str, is_animated: bool) -> Option<Vec<u8>> {
+    let mut args = vec!["-y"];
+    
+    if is_animated && (content_type == "image/gif" || content_type == "image/webp") {
+        args.extend_from_slice(&["-ignore_loop", "0"]);
+    }
+    
+    let comp_level = "6";
+    let quality = "90";
+    
+    if content_type == "image/webp" && is_animated {
+        let _ = fs::copy(tmp_in, tmp_out);
+        return fs::read(tmp_out).ok();
+    } else if content_type == "image/webp" || content_type == "image/jpeg" || content_type == "image/png" {
+        args.extend_from_slice(&["-loop", "1", "-r", "2", "-i", tmp_in, "-c:v", "libwebp", "-lossless", "0", "-compression_level", comp_level, "-q:v", quality, "-vframes", "2", "-loop", "0", tmp_out]);
+    } else if content_type.starts_with("video/") {
+        args.extend_from_slice(&["-i", tmp_in, "-c:v", "libwebp", "-lossless", "0", "-compression_level", comp_level, "-q:v", quality, "-loop", "0", "-an", tmp_out]);
+    } else {
+        args.extend_from_slice(&["-i", tmp_in, "-c:v", "libwebp", "-lossless", "0", "-compression_level", comp_level, "-q:v", quality, "-loop", "0", tmp_out]);
+    }
+    
+    let status = std::process::Command::new("ffmpeg").args(&args).status();
+    
+    if status.is_ok() && fs::metadata(tmp_out).is_ok() {
+        fs::read(tmp_out).ok()
+    } else {
+        None
+    }
+}
+
+async fn auth_status(jar: CookieJar, State(state): State<AppState>) -> impl IntoResponse {
+    let logged_in = jar.get("auth_token").map(|c| c.value() == state.master_key).unwrap_or(false);
+    Json(serde_json::json!({ "loggedIn": logged_in }))
+}
+
+#[derive(Deserialize)]
+struct LoginReq {
+    key: String,
+}
+
+async fn login(jar: CookieJar, State(state): State<AppState>, Json(payload): Json<LoginReq>) -> (CookieJar, impl IntoResponse) {
+    if payload.key == state.master_key {
+        let cookie = Cookie::build(("auth_token", payload.key))
+            .http_only(true)
+            .path("/")
+            .build();
+        (jar.add(cookie), Json(serde_json::json!({ "success": true })).into_response())
+    } else {
+        (jar, (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "Invalid key" }))).into_response())
+    }
+}
+
+async fn logout(jar: CookieJar) -> (CookieJar, impl IntoResponse) {
+    (jar.remove(Cookie::from("auth_token")), Json(serde_json::json!({ "success": true })))
+}
+
+fn levenshtein(a: &str, b: &str) -> usize {
+    if a.is_empty() { return b.len(); }
+    if b.is_empty() { return a.len(); }
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut matrix = vec![vec![0; a_chars.len() + 1]; b_chars.len() + 1];
+    for i in 0..=b_chars.len() { matrix[i][0] = i; }
+    for j in 0..=a_chars.len() { matrix[0][j] = j; }
+    for i in 1..=b_chars.len() {
+        for j in 1..=a_chars.len() {
+            if b_chars[i - 1] == a_chars[j - 1] {
+                matrix[i][j] = matrix[i - 1][j - 1];
+            } else {
+                matrix[i][j] = (matrix[i - 1][j - 1] + 1).min(matrix[i][j - 1] + 1).min(matrix[i - 1][j] + 1);
+            }
+        }
+    }
+    matrix[b_chars.len()][a_chars.len()]
+}
+
+#[derive(Deserialize)]
+struct GifsQuery {
+    page: Option<usize>,
+    limit: Option<usize>,
+    q: Option<String>,
+    nsfw: Option<String>,
+}
+
+async fn get_gifs(Query(q): Query<GifsQuery>, State(state): State<AppState>) -> impl IntoResponse {
+    let mut cached = state.cached_gifs.lock().await;
+    let all_contents = if let Some(contents) = &*cached {
+        contents.clone()
+    } else {
+        let mut all_contents: Vec<(String, i64, i64)> = Vec::new();
+        let mut continuation_token: Option<String> = None;
+        
+        loop {
+            let mut req = state.s3.list_objects_v2().bucket(&state.bucket);
+            if let Some(token) = continuation_token {
+                req = req.continuation_token(token);
+            }
+            let res = match req.send().await {
+                Ok(res) => res,
+                Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list objects").into_response(),
+            };
+            
+            for o in res.contents() {
+                let k = o.key().unwrap_or_default().to_string();
+                let lm = o.last_modified().map(|d| d.as_secs_f64() as i64).unwrap_or(0);
+                let s = o.size().unwrap_or(0);
+                all_contents.push((k, lm, s));
+            }
+            
+            if res.is_truncated().unwrap_or(false) {
+                continuation_token = res.next_continuation_token().map(|s| s.to_string());
+            } else {
+                break;
+            }
+        }
+        
+        all_contents.sort_by(|a, b| b.1.cmp(&a.1));
+        *cached = Some(all_contents.clone());
+        all_contents
+    };
+    drop(cached);
+    let db = get_db();
+    let dims_db = get_dims_db();
+    
+    let include_nsfw = q.nsfw.as_deref() == Some("true");
+    
+    let mut gifs: Vec<GifItem> = all_contents.into_iter().map(|(key, last_mod, size)| {
+        let tags = db.get(&key).cloned().unwrap_or_default();
+        
+        let is_nsfw = tags.iter().any(|t| t.to_lowercase() == "nsfw");
+        
+        let short_key = key.chars().take(6).collect::<String>();
+        let mut slug = short_key.clone();
+        
+        if !tags.is_empty() {
+            let mut safe_tags = Vec::new();
+            for t in tags.iter().take(3) {
+                let s = t.to_lowercase().replace(|c: char| !c.is_ascii_alphanumeric(), "-");
+                if !s.is_empty() { safe_tags.push(s); }
+            }
+            if !safe_tags.is_empty() {
+                slug = format!("{}-{}", safe_tags.join("-"), short_key);
+            }
+        }
+        
+        let mut url = format!("{}/{}", state.r2_public_url, key);
+        let mut is_nsfw_placeholder = None;
+        
+        if is_nsfw && !include_nsfw {
+            let hash = hash_string(&key).abs();
+            let palettes = [
+                ["#ff0080", "#7928ca"],
+                ["#00dfd8", "#007cf0"],
+                ["#ff4d4d", "#f9cb28"],
+                ["#ff4b2b", "#ff416c"],
+                ["#8e2de2", "#4a00e0"],
+                ["#f12711", "#f5af19"],
+                ["#12c2e9", "#c471ed"],
+                ["#f857a6", "#ff5858"]
+            ];
+            let palette = palettes[(hash as usize) % palettes.len()];
+            let c1 = palette[0];
+            let c2 = palette[1];
+            
+            let w = dims_db.get(&key).map(|d| d.w).unwrap_or(300.0);
+            let h = dims_db.get(&key).map(|d| d.h).unwrap_or(400.0);
+            
+            let svg_template = r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"> <defs> <filter id="f{hash}" x="-20%" y="-20%" width="140%" height="140%"> <feGaussianBlur stdDeviation="{blur}" /> </filter> </defs> <rect width="{w}" height="{h}" fill="{c2}" /> <circle cx="{cx1}" cy="{cy1}" r="{r1}" fill="{c1}" filter="url(#f{hash})" opacity="0.6" /> <circle cx="{cx2}" cy="{cy2}" r="{r2}" fill="{c2}" filter="url(#f{hash})" opacity="0.6" /> <circle cx="{cx3}" cy="{cy3}" r="{r3}" fill="{c1}" filter="url(#f{hash})" opacity="0.3" /> <rect width="{w}" height="{h}" fill="rgba(0,0,0,0.2)" /> <text x="{tx}" y="{ty}" font-family="sans-serif" font-weight="bold" font-size="{tsize}" fill="#ffffff" opacity="0.3" text-anchor="middle" dominant-baseline="middle" letter-spacing="4">NSFW</text> </svg>"##;
+            
+            let svg = svg_template
+                .replace("{w}", &w.to_string())
+                .replace("{h}", &h.to_string())
+                .replace("{hash}", &hash.to_string())
+                .replace("{c1}", c1)
+                .replace("{c2}", c2)
+                .replace("{blur}", &w.max(h).mul_add(0.1, 0.0).to_string())
+                .replace("{cx1}", &(w*0.8).to_string())
+                .replace("{cy1}", &(h*0.2).to_string())
+                .replace("{r1}", &(w.min(h)*0.4).to_string())
+                .replace("{cx2}", &(w*0.2).to_string())
+                .replace("{cy2}", &(h*0.8).to_string())
+                .replace("{r2}", &(w.min(h)*0.4).to_string())
+                .replace("{cx3}", &(w*0.5).to_string())
+                .replace("{cy3}", &(h*0.5).to_string())
+                .replace("{r3}", &(w.min(h)*0.3).to_string())
+                .replace("{tx}", &(w/2.0).to_string())
+                .replace("{ty}", &(h/2.0).to_string())
+                .replace("{tsize}", &(w.min(h)*0.1).to_string());
+            
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            let b64 = STANDARD.encode(svg);
+            url = format!("data:image/svg+xml;base64,{}", b64);
+            is_nsfw_placeholder = Some(true);
+        }
+        
+        GifItem {
+            url,
+            key,
+            last_modified: last_mod.to_string(),
+            size,
+            tags,
+            slug,
+            short_key,
+            is_nsfw_placeholder,
+        }
+    }).collect();
+
+    if let Some(query) = &q.q {
+        if !query.trim().is_empty() {
+            let terms: Vec<String> = query.split_whitespace().map(|s| s.to_lowercase()).collect();
+            gifs.retain(|g| {
+                if g.tags.is_empty() { return false; }
+                terms.iter().all(|term| {
+                    g.tags.iter().any(|t| {
+                        let t_lower = t.to_lowercase();
+                        if t_lower == *term || t_lower.starts_with(term) { return true; }
+                        if term.len() >= 3 && t_lower.contains(term) { return true; }
+                        
+                        let t_len = t_lower.chars().count();
+                        let term_len = term.chars().count();
+                        
+                        if term.len() >= 4 && (t_len as isize - term_len as isize).abs() <= 1 {
+                            return levenshtein(&t_lower, term) <= 1;
+                        } else if term.len() >= 7 && (t_len as isize - term_len as isize).abs() <= 2 {
+                            return levenshtein(&t_lower, term) <= 2;
+                        }
+                        
+                        false
+                    })
+                })
+            });
+        }
+    }
+    
+    let page = q.page.unwrap_or(1).max(1);
+    let limit = q.limit.unwrap_or(20);
+    let start_index = (page - 1) * limit;
+    let end_index = page * limit;
+    
+    let items = if start_index < gifs.len() {
+        gifs[start_index..end_index.min(gifs.len())].to_vec()
+    } else {
+        Vec::new()
+    };
+    
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("Cache-Control", "no-store, no-cache, must-revalidate, private".parse().unwrap());
+    
+    (headers, Json(serde_json::json!({
+        "gifs": items,
+        "total": gifs.len(),
+        "totalPages": (gifs.len() as f64 / limit as f64).ceil() as usize,
+        "currentPage": page
+    }))).into_response()
+}
+
+async fn media_proxy(Path(key): Path<String>, State(state): State<AppState>) -> impl IntoResponse {
+    let url = format!("{}/{}", state.r2_public_url, key);
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("Cache-Control", "public, max-age=31536000".parse().unwrap());
+    
+    if let Ok(res) = reqwest::get(&url).await {
+        if let Ok(bytes) = res.bytes().await {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, "image/gif".parse().unwrap());
+            headers.insert(header::CACHE_CONTROL, "public, max-age=31536000".parse().unwrap());
+            return (headers, bytes.to_vec()).into_response();
+        }
+    }
+    StatusCode::NOT_FOUND.into_response()
+}
+
+async fn upload_gif(
+    jar: CookieJar,
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    if jar.get("auth_token").map(|c| c.value()) != Some(&state.master_key) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    
+    {
+        let mut global_uploads = state.global_uploads.lock().unwrap();
+        let now = std::time::Instant::now();
+        let one_hour = std::time::Duration::from_secs(3600);
+        global_uploads.retain(|t| now.duration_since(*t) < one_hour);
+        if global_uploads.len() >= 50 {
+            return (StatusCode::TOO_MANY_REQUESTS, "Uploads temporarily disabled due to high volume").into_response();
+        }
+        global_uploads.push(now);
+    }
+    
+    let mut file_data: Option<axum::body::Bytes> = None;
+    let mut content_type = String::new();
+    let mut tags: Vec<String> = Vec::new();
+    
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "gif" {
+            content_type = field.content_type().unwrap_or("").to_string();
+            if let Ok(bytes) = field.bytes().await {
+                file_data = Some(bytes);
+            }
+        } else if name == "tags" {
+            if let Ok(text) = field.text().await {
+                tags = text.split(',').map(|s: &str| s.trim().to_lowercase()).filter(|s: &String| !s.is_empty()).collect();
+            }
+        }
+    }
+    
+    let Some(data) = file_data else {
+        return (StatusCode::BAD_REQUEST, "No file").into_response();
+    };
+    
+    let allowed = ["image/gif", "image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm", "video/quicktime"];
+    if !allowed.contains(&content_type.as_str()) {
+        return (StatusCode::BAD_REQUEST, "Invalid file type. Only images and videos are allowed.").into_response();
+    }
+
+    let tmp_in = format!("/tmp/in_{}.tmp", hex::encode(rand::random::<[u8; 4]>()));
+    let tmp_out = format!("/tmp/out_{}.webp", hex::encode(rand::random::<[u8; 4]>()));
+    
+    fs::write(&tmp_in, &data).unwrap();
+    let is_animated = data.windows(4).any(|w| w == b"ANIM");
+    
+    let final_data = convert_to_webp(&tmp_in, &tmp_out, &content_type, is_animated).unwrap_or_else(|| data.to_vec());
+    
+    let _ = fs::remove_file(&tmp_in);
+    let _ = fs::remove_file(&tmp_out);
+    
+    let key = format!("{}.webp", hex::encode(rand::random::<[u8; 8]>()));
+    
+    let _guard = state.db_mutex.lock().await;
+    
+    if let Ok(_) = state.s3.put_object()
+        .bucket(&state.bucket)
+        .key(&key)
+        .body(final_data.clone().into())
+        .content_type("image/webp")
+        .send().await 
+    {
+        let mut db = get_db();
+        db.insert(key.clone(), tags.clone());
+        save_db(&db);
+        *state.cached_gifs.lock().await = None;
+        
+        Json(serde_json::json!({
+            "success": true,
+            "url": format!("{}/{}", state.r2_public_url, key),
+            "key": key,
+            "tags": tags
+        })).into_response()
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, "Upload failed").into_response()
+    }
+}
+
+async fn suggest_gif(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let ip = headers.get("cf-connecting-ip")
+        .and_then(|hv| hv.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            headers.get("x-forwarded-for")
+                .and_then(|hv| hv.to_str().ok())
+                .map(|s| s.split(',').next().unwrap_or("").trim().to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        });
+        
+    {
+        let mut limits = state.rate_limits.lock().unwrap();
+        let now = std::time::Instant::now();
+        let one_hour = std::time::Duration::from_secs(3600);
+        
+        let entries = limits.entry(ip).or_insert_with(Vec::new);
+        entries.retain(|t| now.duration_since(*t) < one_hour);
+        
+        if entries.len() >= 5 {
+            return (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": "Too many suggestions from this IP, please try again after an hour." }))).into_response();
+        }
+        entries.push(now);
+    }
+    
+    {
+        let mut global_uploads = state.global_uploads.lock().unwrap();
+        let now = std::time::Instant::now();
+        let one_hour = std::time::Duration::from_secs(3600);
+        global_uploads.retain(|t| now.duration_since(*t) < one_hour);
+        if global_uploads.len() >= 50 {
+            return (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": "Uploads temporarily disabled due to high volume" }))).into_response();
+        }
+        global_uploads.push(now);
+    }
+    
+    let _guard = state.db_mutex.lock().await;
+    let mut sdb = get_suggestions_db();
+    if sdb.len() >= 50 {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": "Queue full" }))).into_response();
+    }
+    
+    let mut file_data: Option<axum::body::Bytes> = None;
+    let mut content_type = String::new();
+    let mut tags: Vec<String> = Vec::new();
+    let mut sent_by = String::new();
+    
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "gif" {
+            content_type = field.content_type().unwrap_or("").to_string();
+            if let Ok(bytes) = field.bytes().await {
+                file_data = Some(bytes);
+            }
+        } else if name == "tags" {
+            if let Ok(text) = field.text().await {
+                tags = text.split(',').map(|s: &str| s.trim().to_lowercase()).filter(|s: &String| !s.is_empty()).collect();
+            }
+        } else if name == "sentBy" {
+            if let Ok(text) = field.text().await {
+                sent_by = text;
+            }
+        }
+    }
+    
+    let Some(data) = file_data else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "No file" }))).into_response();
+    };
+    
+    let allowed = ["image/gif", "image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm", "video/quicktime"];
+    if !allowed.contains(&content_type.as_str()) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid file type. Only images and videos are allowed." }))).into_response();
+    }
+    if sent_by.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Name required" }))).into_response();
+    }
+
+    let tmp_in = format!("/tmp/in_{}.tmp", hex::encode(rand::random::<[u8; 4]>()));
+    let tmp_out = format!("/tmp/out_{}.webp", hex::encode(rand::random::<[u8; 4]>()));
+    
+    fs::write(&tmp_in, &data).unwrap();
+    let is_animated = data.windows(4).any(|w| w == b"ANIM");
+    
+    let final_data = convert_to_webp(&tmp_in, &tmp_out, &content_type, is_animated).unwrap_or_else(|| data.to_vec());
+    
+    let _ = fs::remove_file(&tmp_in);
+    let _ = fs::remove_file(&tmp_out);
+    
+    let key = format!("{}.webp", hex::encode(rand::random::<[u8; 8]>()));
+    
+    if let Ok(_) = state.s3.put_object()
+        .bucket(&state.bucket)
+        .key(&key)
+        .body(final_data.clone().into())
+        .content_type("image/webp")
+        .send().await 
+    {
+        sdb.insert(key.clone(), Suggestion {
+            tags,
+            sent_by,
+            date: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64,
+        });
+        save_suggestions_db(&sdb);
+        
+        Json(serde_json::json!({ "success": true, "message": "Suggestion submitted successfully!" })).into_response()
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "Upload failed" }))).into_response()
+    }
+}
+
+async fn get_suggestions(jar: CookieJar, State(state): State<AppState>) -> impl IntoResponse {
+    if jar.get("auth_token").map(|c| c.value()) != Some(&state.master_key) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let sdb = get_suggestions_db();
+    let mut list = sdb.into_iter().map(|(key, s)| {
+        serde_json::json!({
+            "key": key,
+            "tags": s.tags,
+            "sentBy": s.sent_by,
+            "date": s.date,
+            "url": format!("{}/{}", state.r2_public_url, key)
+        })
+    }).collect::<Vec<_>>();
+    list.sort_by(|a, b| b["date"].as_i64().unwrap_or(0).cmp(&a["date"].as_i64().unwrap_or(0)));
+    Json(serde_json::json!({ "success": true, "suggestions": list })).into_response()
+}
+
+async fn approve_suggestion(jar: CookieJar, Path(key): Path<String>, State(state): State<AppState>) -> impl IntoResponse {
+    if jar.get("auth_token").map(|c| c.value()) != Some(&state.master_key) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let _guard = state.db_mutex.lock().await;
+    let mut sdb = get_suggestions_db();
+    if let Some(s) = sdb.remove(&key) {
+        let mut db = get_db();
+        db.insert(key.clone(), s.tags);
+        save_db(&db);
+        save_suggestions_db(&sdb);
+        *state.cached_gifs.lock().await = None;
+        Json(serde_json::json!({ "success": true })).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "Not found").into_response()
+    }
+}
+
+async fn reject_suggestion(jar: CookieJar, Path(key): Path<String>, State(state): State<AppState>) -> impl IntoResponse {
+    if jar.get("auth_token").map(|c| c.value()) != Some(&state.master_key) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let _guard = state.db_mutex.lock().await;
+    let mut sdb = get_suggestions_db();
+    if sdb.remove(&key).is_some() {
+        let _ = state.s3.delete_object().bucket(&state.bucket).key(&key).send().await;
+        save_suggestions_db(&sdb);
+        Json(serde_json::json!({ "success": true })).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "Not found").into_response()
+    }
+}
+
+#[derive(Deserialize)]
+struct TagsUpdate {
+    tags: String,
+}
+
+async fn update_tags(jar: CookieJar, Path(key): Path<String>, State(state): State<AppState>, Json(payload): Json<TagsUpdate>) -> impl IntoResponse {
+    if jar.get("auth_token").map(|c| c.value()) != Some(&state.master_key) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let _guard = state.db_mutex.lock().await;
+    let mut db = get_db();
+    let parsed_tags = payload.tags.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>();
+    db.insert(key, parsed_tags);
+    save_db(&db);
+    *state.cached_gifs.lock().await = None;
+    Json(serde_json::json!({ "success": true })).into_response()
+}
+
+async fn delete_gif(jar: CookieJar, Path(key): Path<String>, State(state): State<AppState>) -> impl IntoResponse {
+    if jar.get("auth_token").map(|c| c.value()) != Some(&state.master_key) {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+    let _guard = state.db_mutex.lock().await;
+    let mut db = get_db();
+    db.remove(&key);
+    save_db(&db);
+    let _ = state.s3.delete_object().bucket(&state.bucket).key(&key).send().await;
+    *state.cached_gifs.lock().await = None;
+    Json(serde_json::json!({ "success": true })).into_response()
+}
+
+async fn serve_html(Path(slug_param): Path<String>, headers: HeaderMap, State(state): State<AppState>) -> impl IntoResponse {
+    let slug_lower = slug_param.to_lowercase();
+    let has_ext = slug_lower.ends_with(".webp") || slug_lower.ends_with(".gif") || slug_lower.ends_with(".mp4") || slug_lower.ends_with(".webm");
+    
+    let target_slug = if has_ext {
+        let mut s = slug_lower.clone();
+        if s.ends_with(".webp") { s.truncate(s.len() - 5); }
+        else if s.ends_with(".gif") || s.ends_with(".mp4") { s.truncate(s.len() - 4); }
+        else if s.ends_with(".webm") { s.truncate(s.len() - 5); }
+        s
+    } else {
+        slug_lower.clone()
+    };
+    
+    let all_contents = {
+        let guard = state.cached_gifs.lock().await;
+        match &*guard {
+            Some(g) => g.clone(),
+            None => return (StatusCode::INTERNAL_SERVER_ERROR, "Cache missing").into_response(),
+        }
+    };
+    
+    let db = get_db();
+    
+    let mut matched_gif = None;
+    for (key, _, _) in all_contents {
+        let tags = db.get(&key).cloned().unwrap_or_default();
+        let short_key = key.chars().take(6).collect::<String>();
+        let mut slug = short_key.clone();
+        
+        if !tags.is_empty() {
+            let mut safe_tags = Vec::new();
+            for t in tags.iter().take(3) {
+                let s = t.to_lowercase().replace(|c: char| !c.is_ascii_alphanumeric(), "-");
+                if !s.is_empty() { safe_tags.push(s); }
+            }
+            if !safe_tags.is_empty() {
+                slug = format!("{}-{}", safe_tags.join("-"), short_key);
+            }
+        }
+        
+        if slug == target_slug || short_key == target_slug || key.to_lowercase().starts_with(&target_slug) {
+            matched_gif = Some((key, slug, tags));
+            break;
+        }
+    }
+    
+    let (key, slug, tags) = match matched_gif {
+        Some(g) => g,
+        None => return (StatusCode::NOT_FOUND, Html("<h1>404 GIF Not Found</h1>".to_string())).into_response(),
+    };
+    
+    let raw_url = format!("{}/{}", state.r2_public_url, key);
+    
+    if has_ext {
+        let user_agent = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("").to_lowercase();
+        let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()).unwrap_or("").to_lowercase();
+        let is_discord = user_agent.contains("discord");
+        
+        if accept.contains("html") && !is_discord {
+            return axum::response::Redirect::permanent(&format!("/gif/{}", slug)).into_response();
+        }
+        
+        return axum::response::Redirect::temporary(&raw_url).into_response();
+    }
+    
+    if target_slug != slug {
+        return axum::response::Redirect::permanent(&format!("/gif/{}", slug)).into_response();
+    }
+    
+    let is_nsfw = tags.iter().any(|t| t.to_lowercase() == "nsfw");
+    let filter_style = if is_nsfw { "filter: brightness(0.85);" } else { "" };
+    
+    let escaped_tags: Vec<String> = tags.iter().map(|t| t.replace("&", "&amp;")
+                                                         .replace("<", "&lt;")
+                                                         .replace(">", "&gt;")
+                                                         .replace("\"", "&quot;")
+                                                         .replace("'", "&#39;")).collect();
+    
+    let tags_text = if escaped_tags.is_empty() { "GIF".to_string() } else { escaped_tags.join(", ") };
+    let site_url = format!("https://giflibrary.site/gif/{}", slug);
+    
+    let tags_html = if escaped_tags.is_empty() {
+        "<span class=\"tag\">untagged</span>".to_string()
+    } else {
+        escaped_tags.iter().map(|t| format!("<span class=\"tag\">{}</span>", t.to_lowercase())).collect::<Vec<_>>().join("")
+    };
+    
+    if let Ok(mut html) = fs::read_to_string("public/gif.html") {
+        html = html.replace("{tags_text}", &tags_text);
+        html = html.replace("{site_url}", &site_url);
+        html = html.replace("{slug}", &slug);
+        html = html.replace("{raw_url}", &raw_url);
+        html = html.replace("{filter_style}", filter_style);
+        html = html.replace("{tags_html}", &tags_html);
+        return Html(html).into_response();
+    }
+
+    Html("<h1>500 Template Missing</h1>".to_string()).into_response()
+}
+
+async fn serve_about() -> impl IntoResponse {
+    let email = std::env::var("CONTACT_EMAIL").unwrap_or_else(|_| "admin@example.com".to_string());
+    if let Ok(content) = fs::read_to_string("public/about.html") {
+        let content = content.replace("{{CONTACT_EMAIL}}", &email);
+        Html(content).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "Not found").into_response()
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    dotenv().ok();
+    
+    let r2_endpoint = std::env::var("R2_ENDPOINT").expect("R2_ENDPOINT missing");
+    let r2_access = std::env::var("R2_ACCESS_KEY_ID").expect("R2_ACCESS_KEY_ID missing");
+    let r2_secret = std::env::var("R2_SECRET_ACCESS_KEY").expect("R2_SECRET_ACCESS_KEY missing");
+    let r2_bucket = std::env::var("R2_BUCKET").expect("R2_BUCKET missing");
+    let r2_public_url = std::env::var("R2_PUBLIC_URL").expect("R2_PUBLIC_URL missing");
+    let master_key = std::env::var("MASTER_KEY").expect("MASTER_KEY missing");
+    
+    let config = aws_config::defaults(BehaviorVersion::latest())
+        .endpoint_url(r2_endpoint)
+        .credentials_provider(Credentials::new(r2_access, r2_secret, None, None, "r2"))
+        .region(aws_sdk_s3::config::Region::new("auto"))
+        .load()
+        .await;
+        
+    let s3 = S3Client::new(&config);
+    
+    let state = AppState {
+        s3,
+        bucket: r2_bucket,
+        master_key,
+        r2_public_url,
+        db_mutex: Arc::new(Mutex::new(())),
+        rate_limits: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        global_uploads: Arc::new(std::sync::Mutex::new(Vec::new())),
+        cached_gifs: Arc::new(Mutex::new(None)),
+    };
+    
+    let app = Router::new()
+        .route("/api/auth/status", get(auth_status))
+        .route("/api/login", post(login))
+        .route("/api/logout", post(logout))
+        .route("/api/gifs", get(get_gifs))
+        .route("/media/{key}", get(media_proxy))
+        .route("/gif/{slug}", get(serve_html))
+        .route("/api/upload", post(upload_gif))
+        .route("/api/suggest", post(suggest_gif))
+        .route("/api/suggestions", get(get_suggestions))
+        .route("/api/suggestions/{key}/approve", post(approve_suggestion))
+        .route("/api/suggestions/{key}/reject", delete(reject_suggestion))
+        .route("/api/gifs/{key}/tags", put(update_tags))
+        .route("/api/gifs/{key}", delete(delete_gif))
+        .route("/about", get(serve_about))
+        .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
+        .fallback_service(ServeDir::new("public"))
+        .with_state(state)
+        .layer(CorsLayer::permissive());
+        
+    let port_str = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let port: u16 = port_str.parse().unwrap_or(3000);
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    println!("Server running on http://{}", addr);
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}

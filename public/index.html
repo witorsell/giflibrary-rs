@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>personal gif library</title>
+  <meta name="description" content="private collection of gifs">
+  <meta property="og:title" content="personal gif library">
+  <meta property="og:description" content="private collection of gifs">
+  <meta property="og:type" content="website">
+  <meta name="theme-color" content="#ccff00">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="logo">gif<span>library</span> <span style="font-size: 12px; color: var(--text-secondary); font-weight: 400; opacity: 0.7; letter-spacing: 0;">(actually webp)</span></div>
+      <div class="header-controls">
+        <input type="text" id="searchInput" class="main-search" placeholder="Search tags..." autocomplete="off">
+        <div class="header-actions">
+          <label class="toggle-switch" title="NSFW Mode">
+            <input type="checkbox" id="nsfwToggle">
+            <span class="slider"></span>
+          </label>
+          <a href="#" id="suggestNavBtn" class="nav-link">suggest</a>
+          <a href="/about" class="nav-link">about & legal</a>
+          <button id="authBtn" class="auth-pill">Login</button>
+        </div>
+      </div>
+    </header>
+
+    <div id="uploadContainer" style="display:none;">
+      <div class="admin-panel">
+        <div class="tag-input-container">
+          <input type="text" id="uploadTags" class="input-field" placeholder="Type tags (e.g. meme, funny) then drop GIF below" style="margin-bottom: 12px;">
+          <div style="margin-bottom: 20px; display: flex; align-items: center;">
+            <button id="uploadNsfwToggleBtn" type="button" class="nsfw-pill">Mark as NSFW</button>
+          </div>
+        </div>
+        <div id="uploadZone" class="upload-zone">
+          <!-- audio/flac is deliberately included to force mobile browsers to open the native File Picker instead of the restricted Photo Library -->
+          <input type="file" id="fileInput" accept="image/gif,image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,audio/flac">
+          <div id="uploadContent">
+            <h3>Drop or Click to select GIF</h3>
+          </div>
+          <div id="uploadLoader" class="loader"></div>
+        </div>
+        <div id="uploadPreview" style="display:none; text-align: center; margin-bottom: 20px;">
+          <span id="selectedFileName" style="color: var(--text-secondary); margin-right: 12px; font-size: 14px;"></span>
+          <button id="confirmUploadBtn" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px; width: auto; background: #fff; color: #000;">Upload Now</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Suggestion Container (Public) -->
+    <div id="suggestContainer" style="display:none; margin-bottom: 24px;">
+      <div class="admin-panel" style="border: 2px dashed rgba(255,255,255,0.2);">
+        <h3 style="margin: 0 0 16px 0;">Suggest a GIF</h3>
+        <div class="tag-input-container">
+          <input type="text" id="suggestSender" class="input-field" placeholder="Your Name (Required)" style="margin-bottom: 12px;">
+          <input type="text" id="suggestTags" class="input-field" placeholder="Tags (e.g. meme, funny) - Optional" style="margin-bottom: 12px;">
+        </div>
+        <div id="suggestZone" class="upload-zone">
+          <!-- audio/flac is deliberately included to force mobile browsers to open the native File Picker instead of the restricted Photo Library -->
+          <input type="file" id="suggestFileInput" accept="image/gif,image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,audio/flac">
+          <div id="suggestContent">
+            <h3>Drop or Click to select GIF</h3>
+          </div>
+          <div id="suggestLoader" class="loader"></div>
+        </div>
+        <div id="suggestPreview" style="display:none; text-align: center; margin-bottom: 20px;">
+          <span id="suggestFileName" style="color: var(--text-secondary); margin-right: 12px; font-size: 14px;"></span>
+          <button id="confirmSuggestBtn" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px; width: auto; background: #ccff00; color: #000;">Submit Suggestion</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Review Container (Admin) -->
+    <div id="reviewContainer" style="display:none; margin-bottom: 24px;">
+      <div class="admin-panel" style="border: 2px solid #ccff00; padding-bottom: 0;">
+        <h3 style="margin: 0 0 16px 0;">Review Suggestions</h3>
+        <div id="reviewGrid" class="grid" style="column-gap: 12px;">
+          <!-- Suggestions injected here -->
+        </div>
+      </div>
+    </div>
+
+    <div class="grid" id="gifGrid">
+      <!-- GIFs will be injected here -->
+    </div>
+    
+    <div id="paginationContainer" class="pagination-container"></div>
+  </div>
+
+  <!-- Login Modal -->
+  <div id="loginModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content" style="max-width: 300px; padding: 24px;">
+      <form id="loginForm">
+        <input type="password" id="masterKey" class="input-field" placeholder="passphrase" required autocomplete="off" style="text-align: center; letter-spacing: 1px; margin-bottom: 16px; font-size: 14px; padding: 12px; background: rgba(0,0,0,0.5);">
+        <button type="submit" id="submitLoginBtn" class="btn btn-primary" style="padding: 12px; font-size: 14px; background: #fff; color: #000;">Login</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- NSFW Modal -->
+  <div id="nsfwModal" class="modal-overlay" style="display: none; z-index: 10000; backdrop-filter: blur(15px); background: rgba(0,0,0,0.85); padding: 20px;">
+    <div class="modal-content" style="max-width: 360px; padding: 40px 30px; text-align: center; border: 1px solid var(--border); box-shadow: 0 20px 50px rgba(0,0,0,0.5); border-radius: var(--radius);">
+      <h2 style="color: var(--text-primary); font-size: 22px; margin-bottom: 12px; letter-spacing: -0.5px;">Content Warning</h2>
+      <p style="color: var(--text-secondary); margin-bottom: 24px; font-size: 14px; line-height: 1.6;">the following content might contain sensitive, suggestive, offensive, or adult only stuff.<br><br>by clicking i understand, you confirm you're 18+ or the legal age in your country, and you accept full responsibility for any content you choose to view.<br><br>if you need to report something, check our <a href="/about" style="color: var(--primary-color); text-decoration: underline;">removals page</a>.</p>
+      <button id="nsfwAgreeBtn" class="btn btn-primary" style="background: var(--text-primary); color: var(--bg-color); width: 100%; padding: 14px; font-size: 15px; border-radius: 12px; margin-bottom: 12px;">i understand</button>
+      <a href="#" id="nsfwCancelBtn" style="color: var(--text-secondary); font-size: 13px; text-decoration: none; display: block; padding: 8px; transition: color 0.2s;">nevermind</a>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/script.js"></script>
+</body>
+</html>
