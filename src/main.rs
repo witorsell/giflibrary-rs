@@ -746,8 +746,6 @@ async fn serve_html(Path(slug_param): Path<String>, headers: HeaderMap, State(st
                                                          .replace("'", "&#39;")).collect();
     
     let tags_text = if escaped_tags.is_empty() { "GIF".to_string() } else { escaped_tags.join(", ") };
-    let site_url = format!("https://giflibrary.site/gif/{}", slug);
-    
     let tags_html = if escaped_tags.is_empty() {
         "<span class=\"tag\">untagged</span>".to_string()
     } else {
@@ -756,7 +754,6 @@ async fn serve_html(Path(slug_param): Path<String>, headers: HeaderMap, State(st
     
     if let Ok(mut html) = fs::read_to_string("public/gif.html") {
         html = html.replace("{tags_text}", &tags_text);
-        html = html.replace("{site_url}", &site_url);
         html = html.replace("{slug}", &slug);
         html = html.replace("{raw_url}", &raw_url);
         html = html.replace("{filter_style}", filter_style);
