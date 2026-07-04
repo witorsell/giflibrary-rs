@@ -142,7 +142,9 @@ fn convert_to_webp(tmp_in: &str, tmp_out: &str, content_type: &str, is_animated:
 
 async fn auth_status(jar: CookieJar, State(state): State<AppState>) -> impl IntoResponse {
     let logged_in = jar.get("auth_token").map(|c| c.value() == state.master_key).unwrap_or(false);
-    Json(serde_json::json!({ "loggedIn": logged_in }))
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(axum::http::header::CACHE_CONTROL, "no-store, no-cache, must-revalidate, private".parse().unwrap());
+    (headers, Json(serde_json::json!({ "loggedIn": logged_in })))
 }
 
 #[derive(Deserialize)]
@@ -163,7 +165,8 @@ async fn login(jar: CookieJar, State(state): State<AppState>, Json(payload): Jso
 }
 
 async fn logout(jar: CookieJar) -> (CookieJar, impl IntoResponse) {
-    (jar.remove(Cookie::from("auth_token")), Json(serde_json::json!({ "success": true })))
+    let cookie = Cookie::build(("auth_token", "")).path("/").build();
+    (jar.remove(cookie), Json(serde_json::json!({ "success": true })))
 }
 
 fn levenshtein(a: &str, b: &str) -> usize {
