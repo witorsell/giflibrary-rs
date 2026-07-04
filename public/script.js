@@ -759,7 +759,7 @@ let trollPayload = '';
 document.body.addEventListener('input', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
     const val = e.target.value;
-    const trollRegex = /<\s*script|drop\s+table|select\s+.*\s+from|insert\s+into|javascript:|1\s*=\s*1|union\s+select|<iframe|<object|<embed|<svg|onerror=|onload=|eval\(/i;
+    const trollRegex = /<\s*(script|iframe|object|embed|svg|img|body|video|audio|details|base|link|meta|style|form|math|marquee)\b|<\/\s*script|\bon\w+\s*=|javascript:|vbscript:|data:text\/html|srcdoc\s*=|expression\s*\(|\b(alert|prompt|confirm|eval)\s*\(|document\s*\.\s*(cookie|write|location)|window\s*\.\s*location|fromcharcode|%3c\s*script|drop\s+table|truncate\s+table|delete\s+from|insert\s+into|update\s+\w+\s+set|select\s+.+\s+from|union\s+(all\s+)?select|information_schema|order\s+by\s+\d+|['"`]\s*(or|and)\s|\b(or|and)\s+1\s*=\s*1|1\s*=\s*1|['"]\s*--|;\s*(drop|delete|update|insert|shutdown)\b|\bsleep\s*\(|benchmark\s*\(|pg_sleep|waitfor\s+delay|xp_cmdshell|load_file\s*\(|into\s+(out|dump)file|\$\{|\{\{|<%|\$\(|\|\s*(cat|ls|id|whoami|nc|bash|sh)\b|&&\s*(cat|ls|id|whoami|nc|bash|sh)\b|;\s*(cat|ls|id|whoami|nc|bash|sh)\b|\/etc\/(passwd|shadow)|cmd\.exe|powershell|\.\.\/\.\.\/|\.\.%2f|\$where\b|\$ne\b|\$gt\b/i;
     if (trollRegex.test(val)) {
       if (!e.target.dataset.trolled && trollModal) {
         e.target.dataset.trolled = "true";
