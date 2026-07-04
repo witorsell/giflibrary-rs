@@ -733,3 +733,23 @@ async function loadSuggestions() {
     console.error(e);
   }
 }
+
+document.body.addEventListener('input', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+    const val = e.target.value;
+    const trollRegex = /<\s*script|drop\s+table|select\s+.*\s+from|insert\s+into|javascript:|1\s*=\s*1|union\s+select|<iframe|<object|<embed|<svg|onerror=|onload=|eval\(/i;
+    if (trollRegex.test(val)) {
+      showToast("fucj u stop it");
+      if (!e.target.dataset.trolled) {
+        e.target.dataset.trolled = "true";
+        fetch('/api/troll', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ payload: val })
+        }).catch(()=>{});
+      }
+    } else {
+      e.target.dataset.trolled = "";
+    }
+  }
+});

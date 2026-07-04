@@ -767,6 +767,34 @@ async fn serve_html(Path(slug_param): Path<String>, headers: HeaderMap, State(st
     Html("<h1>500 Template Missing</h1>".to_string()).into_response()
 }
 
+#[derive(Deserialize)]
+struct TrollPayload {
+    payload: String,
+}
+
+async fn log_malicious_troll(headers: HeaderMap, Json(body): Json<TrollPayload>) -> impl IntoResponse {
+    let ip = headers.get("cf-connecting-ip")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let entry = serde_json::json!({
+        "ip": ip,
+        "payload": body.payload,
+        "timestamp": chrono::Utc::now().timestamp()
+    });
+
+    let mut logs: Vec<serde_json::Value> = fs::read_to_string("malicious-ppl.json")
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(Vec::new);
+    
+    logs.push(entry);
+    let _ = fs::write("malicious-ppl.json", serde_json::to_string_pretty(&logs).unwrap_or_default());
+
+    StatusCode::OK
+}
+
 async fn serve_about() -> impl IntoResponse {
     let email = std::env::var("CONTACT_EMAIL").unwrap_or_else(|_| "admin@example.com".to_string());
     if let Ok(content) = fs::read_to_string("public/about.html") {
@@ -822,6 +850,7 @@ async fn main() {
         .route("/api/suggestions/{key}/reject", delete(reject_suggestion))
         .route("/api/gifs/{key}/tags", put(update_tags))
         .route("/api/gifs/{key}", delete(delete_gif))
+        .route("/api/troll", post(log_malicious_troll))
         .route("/about", get(serve_about))
         .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
         .fallback_service(ServeDir::new("public"))
