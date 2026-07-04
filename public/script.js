@@ -734,22 +734,45 @@ async function loadSuggestions() {
   }
 }
 
+const trollModal = document.getElementById('trollModal');
+const trollSorryBtn = document.getElementById('trollSorryBtn');
+const trollDefiantBtn = document.getElementById('trollDefiantBtn');
+let trollPayload = '';
+
 document.body.addEventListener('input', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
     const val = e.target.value;
     const trollRegex = /<\s*script|drop\s+table|select\s+.*\s+from|insert\s+into|javascript:|1\s*=\s*1|union\s+select|<iframe|<object|<embed|<svg|onerror=|onload=|eval\(/i;
     if (trollRegex.test(val)) {
-      showToast("fucj u stop it");
-      if (!e.target.dataset.trolled) {
+      if (!e.target.dataset.trolled && trollModal) {
         e.target.dataset.trolled = "true";
-        fetch('/api/troll', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ payload: val })
-        }).catch(()=>{});
+        trollPayload = val;
+        trollModal.style.display = 'flex';
       }
     } else {
       e.target.dataset.trolled = "";
     }
   }
 });
+
+if (trollSorryBtn) {
+  trollSorryBtn.addEventListener('click', () => {
+    trollModal.style.display = 'none';
+    trollPayload = '';
+    showToast("good boy");
+  });
+}
+
+if (trollDefiantBtn) {
+  trollDefiantBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    fetch('/api/troll', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ payload: trollPayload })
+    }).catch(()=>{});
+    trollModal.style.display = 'none';
+    trollPayload = '';
+    showToast("ur ip is on the list now");
+  });
+}
