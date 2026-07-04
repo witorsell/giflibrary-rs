@@ -197,43 +197,49 @@ struct GifsQuery {
     nsfw: Option<String>,
 }
 
-async fn get_gifs(Query(q): Query<GifsQuery>, State(state): State<AppState>) -> impl IntoResponse {
+async fn fetch_all_gifs(state: &AppState) -> Result<Vec<(String, i64, i64)>, String> {
     let mut cached = state.cached_gifs.lock().await;
-    let all_contents = if let Some(contents) = &*cached {
-        contents.clone()
-    } else {
-        let mut all_contents: Vec<(String, i64, i64)> = Vec::new();
-        let mut continuation_token: Option<String> = None;
+    if let Some(contents) = &*cached {
+        return Ok(contents.clone());
+    }
+    
+    let mut all_contents: Vec<(String, i64, i64)> = Vec::new();
+    let mut continuation_token: Option<String> = None;
+    
+    loop {
+        let mut req = state.s3.list_objects_v2().bucket(&state.bucket);
+        if let Some(token) = continuation_token {
+            req = req.continuation_token(token);
+        }
+        let res = match req.send().await {
+            Ok(res) => res,
+            Err(_) => return Err("Failed to list objects".to_string()),
+        };
         
-        loop {
-            let mut req = state.s3.list_objects_v2().bucket(&state.bucket);
-            if let Some(token) = continuation_token {
-                req = req.continuation_token(token);
-            }
-            let res = match req.send().await {
-                Ok(res) => res,
-                Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list objects").into_response(),
-            };
-            
-            for o in res.contents() {
-                let k = o.key().unwrap_or_default().to_string();
-                let lm = o.last_modified().map(|d| d.as_secs_f64() as i64).unwrap_or(0);
-                let s = o.size().unwrap_or(0);
-                all_contents.push((k, lm, s));
-            }
-            
-            if res.is_truncated().unwrap_or(false) {
-                continuation_token = res.next_continuation_token().map(|s| s.to_string());
-            } else {
-                break;
-            }
+        for o in res.contents() {
+            let k = o.key().unwrap_or_default().to_string();
+            let lm = o.last_modified().map(|d| d.as_secs_f64() as i64).unwrap_or(0);
+            let s = o.size().unwrap_or(0);
+            all_contents.push((k, lm, s));
         }
         
-        all_contents.sort_by(|a, b| b.1.cmp(&a.1));
-        *cached = Some(all_contents.clone());
-        all_contents
+        if res.is_truncated().unwrap_or(false) {
+            continuation_token = res.next_continuation_token().map(|s| s.to_string());
+        } else {
+            break;
+        }
+    }
+    
+    all_contents.sort_by(|a, b| b.1.cmp(&a.1));
+    *cached = Some(all_contents.clone());
+    Ok(all_contents)
+}
+
+async fn get_gifs(Query(q): Query<GifsQuery>, State(state): State<AppState>) -> impl IntoResponse {
+    let all_contents = match fetch_all_gifs(&state).await {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
-    drop(cached);
     let db = get_db();
     let dims_db = get_dims_db();
     
@@ -680,12 +686,9 @@ async fn serve_html(Path(slug_param): Path<String>, headers: HeaderMap, State(st
         slug_lower.clone()
     };
     
-    let all_contents = {
-        let guard = state.cached_gifs.lock().await;
-        match &*guard {
-            Some(g) => g.clone(),
-            None => return (StatusCode::INTERNAL_SERVER_ERROR, "Cache missing").into_response(),
-        }
+    let all_contents = match fetch_all_gifs(&state).await {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
     
     let db = get_db();
