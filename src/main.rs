@@ -57,7 +57,7 @@ struct Suggestion {
     date: i64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct Dim {
     w: f64,
     h: f64,
@@ -69,6 +69,12 @@ fn get_dims_db() -> HashMap<String, Dim> {
         serde_json::from_str(&data).unwrap_or_default()
     } else {
         HashMap::new()
+    }
+}
+
+fn save_dims_db(db: &HashMap<String, Dim>) {
+    if let Ok(json) = serde_json::to_string_pretty(db) {
+        let _ = fs::write("dimensions.json", json);
     }
 }
 
@@ -463,8 +469,15 @@ async fn upload_gif(
         let mut db = get_db();
         db.insert(key.clone(), tags.clone());
         save_db(&db);
+
+        if let Ok(img) = image::load_from_memory(&final_data) {
+            let mut dims_db = get_dims_db();
+            dims_db.insert(key.clone(), Dim { w: img.width() as f64, h: img.height() as f64 });
+            save_dims_db(&dims_db);
+        }
+
         *state.cached_gifs.lock().await = None;
-        
+
         Json(serde_json::json!({
             "success": true,
             "url": format!("{}/{}", state.r2_public_url, key),
@@ -588,6 +601,12 @@ async fn suggest_gif(
             date: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64,
         });
         save_suggestions_db(&sdb);
+
+        if let Ok(img) = image::load_from_memory(&final_data) {
+            let mut dims_db = get_dims_db();
+            dims_db.insert(key.clone(), Dim { w: img.width() as f64, h: img.height() as f64 });
+            save_dims_db(&dims_db);
+        }
         
         Json(serde_json::json!({ "success": true, "message": "Suggestion submitted successfully!" })).into_response()
     } else {
