@@ -47,6 +47,8 @@ struct GifItem {
     short_key: String,
     #[serde(rename = "isNsfwPlaceholder", skip_serializing_if = "Option::is_none")]
     is_nsfw_placeholder: Option<bool>,
+    #[serde(rename = "isHidden", skip_serializing_if = "Option::is_none")]
+    is_hidden: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -241,21 +243,27 @@ async fn fetch_all_gifs(state: &AppState) -> Result<Vec<(String, i64, i64)>, Str
     Ok(all_contents)
 }
 
-async fn get_gifs(Query(q): Query<GifsQuery>, State(state): State<AppState>) -> impl IntoResponse {
+async fn get_gifs(jar: CookieJar, Query(q): Query<GifsQuery>, State(state): State<AppState>) -> impl IntoResponse {
     let all_contents = match fetch_all_gifs(&state).await {
         Ok(c) => c,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
     let db = get_db();
     let dims_db = get_dims_db();
-    
+
     let include_nsfw = q.nsfw.as_deref() == Some("true");
-    
-    let mut gifs: Vec<GifItem> = all_contents.into_iter().map(|(key, last_mod, size)| {
+    let is_admin = jar.get("auth_token").map(|c| c.value() == state.master_key).unwrap_or(false);
+
+    let mut gifs: Vec<GifItem> = all_contents.into_iter().filter_map(|(key, last_mod, size)| {
         let tags = db.get(&key).cloned().unwrap_or_default();
-        
+
         let is_nsfw = tags.iter().any(|t| t.to_lowercase() == "nsfw");
-        
+        let is_hidden = tags.iter().any(|t| t.to_lowercase() == "hidden");
+
+        if is_hidden && !is_admin {
+            return None;
+        }
+
         let short_key = key.chars().take(6).collect::<String>();
         let mut slug = short_key.clone();
         
@@ -320,7 +328,7 @@ async fn get_gifs(Query(q): Query<GifsQuery>, State(state): State<AppState>) -> 
             is_nsfw_placeholder = Some(true);
         }
         
-        GifItem {
+        Some(GifItem {
             url,
             key,
             last_modified: last_mod.to_string(),
@@ -329,7 +337,8 @@ async fn get_gifs(Query(q): Query<GifsQuery>, State(state): State<AppState>) -> 
             slug,
             short_key,
             is_nsfw_placeholder,
-        }
+            is_hidden: if is_hidden { Some(true) } else { None },
+        })
     }).collect();
 
     if let Some(query) = &q.q {

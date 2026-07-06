@@ -195,35 +195,48 @@ function renderGifs(gifs) {
   if (!gifGrid) return;
   gifs.forEach(gif => {
     const isNsfw = gif.tags && gif.tags.some(t => t.toLowerCase() === 'nsfw');
+    const isHidden = !!gif.isHidden;
     const card = document.createElement('div');
-    card.className = isNsfw ? 'gif-card nsfw-card' : 'gif-card';
-    
-    const tagsHtml = gif.tags && gif.tags.length > 0 
+    card.className = (isNsfw ? 'gif-card nsfw-card' : 'gif-card') + (isHidden ? ' hidden-card' : '');
+
+    const tagsHtml = gif.tags && gif.tags.length > 0
       ? `<div class="gif-tags">${gif.tags.map(t => `<span>#${escapeHTML(t)}</span>`).join('')}</div>`
       : '';
-      
-    const deleteBtnHtml = isLoggedIn 
+
+    const hiddenOverlayHtml = isHidden ? `<div class="hidden-overlay"><span>hidden gif</span></div>` : '';
+
+    const deleteBtnHtml = isLoggedIn
       ? `<button class="action-btn delete icon-btn" data-key="${escapeHTML(gif.key)}" style="background:var(--danger); color: white;" title="Delete">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-         </button>` 
+         </button>`
       : '';
-      
+
     const editBtnHtml = isLoggedIn
       ? `<button class="action-btn edit icon-btn" data-key="${escapeHTML(gif.key)}" data-tags="${escapeHTML((gif.tags||[]).join(','))}" title="Edit">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
          </button>`
       : '';
-      
+
+    const hideBtnHtml = isLoggedIn
+      ? `<button class="action-btn hide-btn icon-btn" data-key="${escapeHTML(gif.key)}" data-tags="${escapeHTML((gif.tags||[]).join(','))}" data-hidden="${isHidden}" style="background:${isHidden ? 'var(--primary-color)' : 'white'}; color: black;" title="${isHidden ? 'Unhide' : 'Hide'}">
+          ${isHidden
+            ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>`
+            : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>`}
+         </button>`
+      : '';
+
     const slugUrl = gif.slug ? escapeHTML(gif.slug) : escapeHTML(gif.key);
 
     card.innerHTML = `
-      <img src="${escapeHTML(gif.url)}" loading="lazy" alt="GIF" class="gif-img">
+      <img src="${escapeHTML(gif.url)}" alt="GIF" class="gif-img">
+      ${hiddenOverlayHtml}
       ${tagsHtml}
       <div class="gif-actions">
         <button class="action-btn copy-btn icon-btn" data-key="${escapeHTML(gif.key)}" data-url="${window.location.origin}/gif/${slugUrl}.webp" style="background: white; color: black;" title="Copy Link">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
         </button>
         <div style="display:flex; gap:8px;">
+          ${hideBtnHtml}
           ${editBtnHtml}
           ${deleteBtnHtml}
         </div>
@@ -479,6 +492,37 @@ if (gifGrid) {
       }
     }
 
+    if (e.target.closest('.hide-btn')) {
+      const btn = e.target.closest('.hide-btn');
+      const key = btn.dataset.key;
+      const wasHidden = btn.dataset.hidden === 'true';
+      const currentTags = btn.dataset.tags ? btn.dataset.tags.split(',').map(t => t.trim()).filter(Boolean) : [];
+      const newTags = wasHidden
+        ? currentTags.filter(t => t.toLowerCase() !== 'hidden')
+        : [...currentTags, 'hidden'];
+
+      const originalText = btn.innerHTML;
+      btn.textContent = '...';
+
+      try {
+        const res = await fetch(`/api/gifs/${key}/tags`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tags: newTags.join(',') })
+        });
+        if (res.ok) {
+          showToast(wasHidden ? 'Unhidden' : 'Hidden');
+          loadGifs(currentPage);
+        } else {
+          showToast('Update failed');
+          btn.innerHTML = originalText;
+        }
+      } catch (err) {
+        showToast('Update error');
+        btn.innerHTML = originalText;
+      }
+    }
+
     if (e.target.closest('.delete')) {
       const btn = e.target.closest('.delete');
       if (!confirm("Are you sure you want to delete this GIF?")) return;
@@ -698,7 +742,7 @@ async function loadSuggestions() {
       card.className = 'gif-card';
       const tags = s.tags && s.tags.length ? s.tags.map(t => `#${escapeHTML(t)}`).join(' ') : 'No tags';
       card.innerHTML = `
-        <img src="${escapeHTML(s.url)}" loading="lazy">
+        <img src="${escapeHTML(s.url)}">
         <div style="padding: 10px; font-size: 13px;">
           <div style="color:var(--text-secondary); margin-bottom: 5px;">Suggested by: <b style="color:white;">${escapeHTML(s.sentBy)}</b></div>
           <div style="margin-bottom: 10px; color: #ccff00;">${tags}</div>
