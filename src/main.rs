@@ -705,7 +705,7 @@ async fn delete_gif(jar: CookieJar, Path(key): Path<String>, State(state): State
     Json(serde_json::json!({ "success": true })).into_response()
 }
 
-async fn serve_html(Path(slug_param): Path<String>, headers: HeaderMap, State(state): State<AppState>) -> impl IntoResponse {
+async fn serve_html(jar: CookieJar, Path(slug_param): Path<String>, headers: HeaderMap, State(state): State<AppState>) -> impl IntoResponse {
     let slug_lower = slug_param.to_lowercase();
     let has_ext = slug_lower.ends_with(".webp") || slug_lower.ends_with(".gif") || slug_lower.ends_with(".mp4") || slug_lower.ends_with(".webm");
     
@@ -753,7 +753,13 @@ async fn serve_html(Path(slug_param): Path<String>, headers: HeaderMap, State(st
         Some(g) => g,
         None => return (StatusCode::NOT_FOUND, Html("<h1>404 GIF Not Found</h1>".to_string())).into_response(),
     };
-    
+
+    let is_hidden = tags.iter().any(|t| t.to_lowercase() == "hidden");
+    let is_admin = jar.get("auth_token").map(|c| c.value() == state.master_key).unwrap_or(false);
+    if is_hidden && !is_admin {
+        return (StatusCode::NOT_FOUND, Html("<h1>404 GIF Not Found</h1>".to_string())).into_response();
+    }
+
     let raw_url = format!("{}/{}", state.r2_public_url, key);
     
     if has_ext {
