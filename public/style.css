@@ -396,20 +396,19 @@ body {
 
 @media (max-width: 600px) {
   .gif-actions {
-    padding: 20px 8px 8px;
-    gap: 6px;
-    flex-wrap: wrap;
+    padding: 18px 6px 6px;
+    gap: 4px;
   }
   .admin-actions-group {
-    gap: 6px;
+    gap: 4px;
   }
   .icon-btn {
-    width: 32px;
-    height: 32px;
+    width: 26px;
+    height: 26px;
   }
   .action-btn svg {
-    width: 12px;
-    height: 12px;
+    width: 10px;
+    height: 10px;
   }
 }
 
