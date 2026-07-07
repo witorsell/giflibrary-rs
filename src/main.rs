@@ -20,7 +20,7 @@ use std::{
 };
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Clone)]
 struct AppState {
@@ -751,13 +751,13 @@ async fn serve_html(jar: CookieJar, Path(slug_param): Path<String>, headers: Hea
     
     let (key, slug, tags) = match matched_gif {
         Some(g) => g,
-        None => return (StatusCode::NOT_FOUND, Html("<h1>404 GIF Not Found</h1>".to_string())).into_response(),
+        None => return not_found_page().into_response(),
     };
 
     let is_hidden = tags.iter().any(|t| t.to_lowercase() == "hidden");
     let is_admin = jar.get("auth_token").map(|c| c.value() == state.master_key).unwrap_or(false);
     if is_hidden && !is_admin {
-        return (StatusCode::NOT_FOUND, Html("<h1>404 GIF Not Found</h1>".to_string())).into_response();
+        return not_found_page().into_response();
     }
 
     let raw_url = format!("{}/{}", state.r2_public_url, key);
@@ -853,6 +853,11 @@ async fn log_malicious_troll(State(state): State<AppState>, headers: HeaderMap, 
     StatusCode::OK
 }
 
+fn not_found_page() -> impl IntoResponse {
+    let content = fs::read_to_string("public/404.html").unwrap_or_else(|_| "404 Not Found".to_string());
+    (StatusCode::NOT_FOUND, Html(content))
+}
+
 async fn serve_about() -> impl IntoResponse {
     let email = std::env::var("CONTACT_EMAIL").unwrap_or_else(|_| "admin@example.com".to_string());
     if let Ok(content) = fs::read_to_string("public/about.html") {
@@ -911,7 +916,7 @@ async fn main() {
         .route("/api/troll", post(log_malicious_troll))
         .route("/about", get(serve_about))
         .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
-        .fallback_service(ServeDir::new("public"))
+        .fallback_service(ServeDir::new("public").not_found_service(ServeFile::new("public/404.html")))
         .with_state(state)
         .layer(CorsLayer::permissive());
         

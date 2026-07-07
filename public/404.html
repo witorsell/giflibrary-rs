@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>404 - giflibrary</title>
+  <meta name="theme-color" content="#ccff00">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    body {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 20px;
+    }
+    .code {
+      font-size: 96px;
+      font-weight: 700;
+      letter-spacing: -4px;
+      color: #ccff00;
+      line-height: 1;
+      margin-bottom: 16px;
+    }
+    .msg {
+      font-size: 18px;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+    }
+    .sub {
+      font-size: 14px;
+      color: var(--text-secondary);
+      margin-bottom: 32px;
+      max-width: 400px;
+      line-height: 1.6;
+    }
+    a.back-btn {
+      display: inline-block;
+      background: #ccff00;
+      color: #000;
+      padding: 12px 24px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 14px;
+      transition: opacity 0.2s;
+    }
+    a.back-btn:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <div class="code">404</div>
+  <div class="msg">this gif doesn't exist</div>
+  <div class="sub">whatever you were looking for isn't here. maybe it got deleted, maybe it never existed, maybe you fat-fingered the url.</div>
+  <a href="/" class="back-btn">← back to library</a>
+</body>
+</html>
