@@ -318,7 +318,6 @@ body {
   justify-content: center;
   gap: 10px;
   pointer-events: none;
-  z-index: 5;
 }
 
 .hidden-overlay svg {
