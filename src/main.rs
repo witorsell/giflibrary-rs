@@ -49,6 +49,10 @@ struct GifItem {
     is_nsfw_placeholder: Option<bool>,
     #[serde(rename = "isHidden", skip_serializing_if = "Option::is_none")]
     is_hidden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    w: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    h: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -328,6 +332,7 @@ async fn get_gifs(jar: CookieJar, Query(q): Query<GifsQuery>, State(state): Stat
             is_nsfw_placeholder = Some(true);
         }
         
+        let wh = dims_db.get(&key).map(|d| (d.w, d.h));
         Some(GifItem {
             url,
             key,
@@ -338,6 +343,8 @@ async fn get_gifs(jar: CookieJar, Query(q): Query<GifsQuery>, State(state): Stat
             short_key,
             is_nsfw_placeholder,
             is_hidden: if is_hidden { Some(true) } else { None },
+            w: wh.map(|(w, _)| w),
+            h: wh.map(|(_, h)| h),
         })
     }).collect();
 
