@@ -19,10 +19,12 @@
       <div class="header-controls">
         <input type="text" id="searchInput" class="main-search" placeholder="Search tags..." autocomplete="off">
         <div class="header-actions">
-          <label class="toggle-switch" title="NSFW Mode">
-            <input type="checkbox" id="nsfwToggle">
-            <span class="slider"></span>
-          </label>
+          <div id="nsfwFilterGroup" class="nsfw-pill-group" title="NSFW Filters">
+            <button type="button" class="nsfw-pill" data-category="suggestive">Suggestive</button>
+            <button type="button" class="nsfw-pill" data-category="offensive">Offensive</button>
+            <button type="button" class="nsfw-pill" data-category="sexual">Sexual</button>
+            <button type="button" class="nsfw-pill" data-category="nsfw">Other NSFW</button>
+          </div>
           <a href="#" id="suggestNavBtn" class="nav-link">suggest</a>
           <a href="/about" class="nav-link">about & legal</a>
           <button id="authBtn" class="auth-pill">Login</button>

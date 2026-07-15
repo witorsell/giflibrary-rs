@@ -25,7 +25,8 @@ const loadMoreTrigger = document.getElementById('loadMoreTrigger');
 
 const nsfwModal = document.getElementById('nsfwModal');
 const nsfwAgreeBtn = document.getElementById('nsfwAgreeBtn');
-const nsfwToggle = document.getElementById('nsfwToggle');
+const nsfwFilterPills = document.querySelectorAll('#nsfwFilterGroup .nsfw-pill');
+const NSFW_CATEGORIES = ['suggestive', 'offensive', 'sexual', 'nsfw'];
 const uploadNsfwPills = document.querySelectorAll('#uploadNsfwPills .nsfw-pill');
 
 let isLoggedIn = false;
@@ -36,10 +37,22 @@ let hasMore = true;
 let isLoading = false;
 let searchTimeout = null;
 let pendingFile = null;
-let nsfwMode = localStorage.getItem('nsfw_mode_active') === 'true';
+let pendingCategory = null;
 
-if (nsfwToggle) nsfwToggle.checked = nsfwMode;
-if (nsfwMode) document.body.classList.add('nsfw-active');
+let enabledCategories;
+const storedCategories = localStorage.getItem('nsfw_categories_active');
+if (storedCategories) {
+  enabledCategories = new Set(JSON.parse(storedCategories));
+} else if (localStorage.getItem('nsfw_mode_active') === 'true') {
+  enabledCategories = new Set(NSFW_CATEGORIES);
+  localStorage.setItem('nsfw_categories_active', JSON.stringify([...enabledCategories]));
+} else {
+  enabledCategories = new Set();
+}
+
+nsfwFilterPills.forEach(pill => {
+  if (enabledCategories.has(pill.dataset.category)) pill.classList.add('active');
+});
 
 async function checkAuth() {
   try {
@@ -109,7 +122,8 @@ async function loadGifs(pageNumber = 1) {
   }
 
   try {
-    const res = await fetch(`/api/gifs?page=${currentPage}&limit=20&q=${encodeURIComponent(currentQuery)}&nsfw=${nsfwMode}`);
+    const categoriesParam = [...enabledCategories].join(',');
+    const res = await fetch(`/api/gifs?page=${currentPage}&limit=20&q=${encodeURIComponent(currentQuery)}&nsfw_categories=${encodeURIComponent(categoriesParam)}`);
     const data = await res.json();
     renderGifs(data.gifs);
     renderPagination(data.totalPages, data.currentPage);
@@ -194,10 +208,17 @@ function escapeHTML(str) {
 function renderGifs(gifs) {
   if (!gifGrid) return;
   gifs.forEach(gif => {
-    const isNsfw = gif.tags && gif.tags.some(t => t.toLowerCase() === 'nsfw');
+    const gifCategories = (gif.tags || [])
+      .map(t => t.toLowerCase())
+      .filter(t => NSFW_CATEGORIES.includes(t));
+    const isNsfw = gifCategories.length > 0;
+    const isLocked = isNsfw && !gifCategories.every(c => enabledCategories.has(c));
     const isHidden = !!gif.isHidden;
     const card = document.createElement('div');
-    card.className = (isNsfw ? 'gif-card nsfw-card' : 'gif-card') + (isHidden ? ' hidden-card' : '');
+    card.className = (isNsfw ? 'gif-card nsfw-card' : 'gif-card')
+      + (isLocked ? ' locked' : '')
+      + (isHidden ? ' hidden-card' : '');
+    card.dataset.categories = gifCategories.join(',');
 
     const tagsHtml = gif.tags && gif.tags.length > 0
       ? `<div class="gif-tags">${gif.tags.map(t => `<span>#${escapeHTML(t)}</span>`).join('')}</div>`
@@ -251,15 +272,13 @@ function renderGifs(gifs) {
 
 if (gifGrid) {
   gifGrid.addEventListener('click', async (e) => {
-    const nsfwCard = e.target.closest('.nsfw-card');
-    if (nsfwCard && !nsfwMode && !isLoggedIn) {
-      showToast('Enable NSFW Mode in the header to view this content');
-      if (nsfwToggle) {
-        const toggleParent = nsfwToggle.closest('.toggle-switch');
-        if (toggleParent) {
-          toggleParent.classList.add('shake');
-          setTimeout(() => toggleParent.classList.remove('shake'), 400);
-        }
+    const nsfwCard = e.target.closest('.nsfw-card.locked');
+    if (nsfwCard && !isLoggedIn) {
+      showToast('Enable the matching NSFW filter in the header to view this content');
+      const filterGroup = document.getElementById('nsfwFilterGroup');
+      if (filterGroup) {
+        filterGroup.classList.add('shake');
+        setTimeout(() => filterGroup.classList.remove('shake'), 400);
       }
       return;
     }
@@ -559,72 +578,71 @@ function showToast(msg) {
 
 // Pagination replaces infinite scroll
 
-if (nsfwToggle) {
-  nsfwToggle.addEventListener('change', (e) => {
-    if (e.target.checked) {
-      if (!localStorage.getItem('nsfw_agreed')) {
-        e.target.checked = false; // Revert visually
-        nsfwModal.style.display = 'flex';
-      } else {
-        nsfwMode = true;
-        localStorage.setItem('nsfw_mode_active', 'true');
-        document.body.classList.add('nsfw-active');
-        updateNsfwDom();
-      }
-    } else {
-      nsfwMode = false;
-      localStorage.setItem('nsfw_mode_active', 'false');
-      document.body.classList.remove('nsfw-active');
-      updateNsfwDom();
-    }
-  });
+function persistEnabledCategories() {
+  localStorage.setItem('nsfw_categories_active', JSON.stringify([...enabledCategories]));
 }
+
+nsfwFilterPills.forEach(pill => {
+  pill.addEventListener('click', () => {
+    const category = pill.dataset.category;
+    if (enabledCategories.has(category)) {
+      enabledCategories.delete(category);
+      pill.classList.remove('active');
+      persistEnabledCategories();
+      updateNsfwDom();
+      return;
+    }
+    if (!localStorage.getItem('nsfw_agreed')) {
+      pendingCategory = category;
+      nsfwModal.style.display = 'flex';
+      return;
+    }
+    enabledCategories.add(category);
+    pill.classList.add('active');
+    persistEnabledCategories();
+    updateNsfwDom();
+  });
+});
 
 async function updateNsfwDom() {
   const cards = document.querySelectorAll('.nsfw-card');
   if (cards.length === 0) return;
-  
-  if (nsfwMode) {
+
+  try {
+    const categoriesParam = [...enabledCategories].join(',');
+    const res = await fetch(`/api/gifs?limit=1000&nsfw_categories=${encodeURIComponent(categoriesParam)}`);
+    const data = await res.json();
+    const urlMap = {};
+    data.gifs.forEach(g => { urlMap[g.key] = g.url; });
+
     cards.forEach(card => {
       const copyBtn = card.querySelector('.copy-btn');
-      if (copyBtn) {
-        const key = copyBtn.dataset.key;
-        const img = card.querySelector('img');
-        if (img) img.src = `https://r2.giflibrary.site/${key}`;
-      }
+      if (!copyBtn) return;
+      const key = copyBtn.dataset.key;
+      const img = card.querySelector('img');
+      if (img && urlMap[key]) img.src = urlMap[key];
+
+      const cardCategories = (card.dataset.categories || '').split(',').filter(Boolean);
+      const locked = cardCategories.length > 0 && !cardCategories.every(c => enabledCategories.has(c));
+      card.classList.toggle('locked', locked);
     });
-  } else {
-    try {
-      const res = await fetch(`/api/gifs?limit=1000&nsfw=false`);
-      const data = await res.json();
-      const svgMap = {};
-      data.gifs.forEach(g => { svgMap[g.key] = g.url; });
-      
-      cards.forEach(card => {
-        const copyBtn = card.querySelector('.copy-btn');
-        if (copyBtn) {
-          const key = copyBtn.dataset.key;
-          const img = card.querySelector('img');
-          if (img && svgMap[key]) {
-            img.src = svgMap[key];
-          }
-        }
-      });
-    } catch(e) {
-      console.error(e);
-    }
+  } catch(e) {
+    console.error(e);
   }
 }
 
 if (nsfwAgreeBtn) {
   nsfwAgreeBtn.addEventListener('click', () => {
     localStorage.setItem('nsfw_agreed', 'true');
-    localStorage.setItem('nsfw_mode_active', 'true');
     nsfwModal.style.display = 'none';
-    nsfwMode = true;
-    if (nsfwToggle) nsfwToggle.checked = true;
-    document.body.classList.add('nsfw-active');
-    updateNsfwDom();
+    if (pendingCategory) {
+      enabledCategories.add(pendingCategory);
+      const pill = document.querySelector(`#nsfwFilterGroup .nsfw-pill[data-category="${pendingCategory}"]`);
+      if (pill) pill.classList.add('active');
+      persistEnabledCategories();
+      pendingCategory = null;
+      updateNsfwDom();
+    }
   });
 }
 
@@ -647,7 +665,7 @@ if (nsfwCancelBtn) {
   nsfwCancelBtn.addEventListener('click', (e) => {
     e.preventDefault();
     nsfwModal.style.display = 'none';
-    if (nsfwToggle) nsfwToggle.checked = false;
+    pendingCategory = null;
   });
 }
 
