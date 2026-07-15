@@ -567,15 +567,15 @@ input:checked + .slider:before {
 }
 
 /* NSFW Blur Mode */
-body:not(.nsfw-active) .nsfw-card .gif-img {
+.nsfw-card.locked .gif-img {
   filter: brightness(0.85);
   pointer-events: none;
   user-select: none;
 }
-body:not(.nsfw-active) .nsfw-card {
+.nsfw-card.locked {
   cursor: pointer;
 }
-body:not(.nsfw-active):not(.logged-in) .nsfw-card .gif-actions {
+body:not(.logged-in) .nsfw-card.locked .gif-actions {
   display: none !important;
 }
 
@@ -618,6 +618,16 @@ body:not(.nsfw-active):not(.logged-in) .nsfw-card .gif-actions {
   height: 8px;
   background: var(--border);
   border-radius: 50%;
+}
+
+.nsfw-pill-group {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.nsfw-pill-group .nsfw-pill {
+  padding: 6px 12px;
+  font-size: 12px;
 }
 
 @keyframes shake {
