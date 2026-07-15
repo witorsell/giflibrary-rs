@@ -26,10 +26,10 @@ const loadMoreTrigger = document.getElementById('loadMoreTrigger');
 const nsfwModal = document.getElementById('nsfwModal');
 const nsfwAgreeBtn = document.getElementById('nsfwAgreeBtn');
 const nsfwToggle = document.getElementById('nsfwToggle');
-const uploadNsfwToggleBtn = document.getElementById('uploadNsfwToggleBtn');
+const uploadNsfwPills = document.querySelectorAll('#uploadNsfwPills .nsfw-pill');
 
 let isLoggedIn = false;
-let isUploadNsfw = false;
+let uploadCategories = new Set();
 let currentPage = 1;
 let currentQuery = '';
 let hasMore = true;
@@ -399,8 +399,9 @@ if (confirmUploadBtn) {
     formData.append('gif', pendingFile);
     if (uploadTags) {
       let tagsVal = uploadTags.value;
-      if (isUploadNsfw) {
-        tagsVal = tagsVal ? tagsVal + ', nsfw' : 'nsfw';
+      if (uploadCategories.size > 0) {
+        const categoryTags = [...uploadCategories].join(', ');
+        tagsVal = tagsVal ? tagsVal + ', ' + categoryTags : categoryTags;
       }
       formData.append('tags', tagsVal);
     }
@@ -420,10 +421,8 @@ if (confirmUploadBtn) {
       if (res.ok) {
         showToast('Uploaded successfully');
         if (uploadTags) uploadTags.value = '';
-        if (uploadNsfwToggleBtn) {
-          isUploadNsfw = false;
-          uploadNsfwToggleBtn.classList.remove('active');
-        }
+        uploadCategories.clear();
+        uploadNsfwPills.forEach(pill => pill.classList.remove('active'));
         pendingFile = null;
         loadGifs(true);
       } else {
@@ -629,16 +628,18 @@ if (nsfwAgreeBtn) {
   });
 }
 
-if (uploadNsfwToggleBtn) {
-  uploadNsfwToggleBtn.addEventListener('click', () => {
-    isUploadNsfw = !isUploadNsfw;
-    if (isUploadNsfw) {
-      uploadNsfwToggleBtn.classList.add('active');
+uploadNsfwPills.forEach(pill => {
+  pill.addEventListener('click', () => {
+    const category = pill.dataset.category;
+    if (uploadCategories.has(category)) {
+      uploadCategories.delete(category);
+      pill.classList.remove('active');
     } else {
-      uploadNsfwToggleBtn.classList.remove('active');
+      uploadCategories.add(category);
+      pill.classList.add('active');
     }
   });
-}
+});
 
 const nsfwCancelBtn = document.getElementById('nsfwCancelBtn');
 

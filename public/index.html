@@ -35,7 +35,12 @@
         <div class="tag-input-container">
           <input type="text" id="uploadTags" class="input-field" placeholder="Type tags (e.g. meme, funny) then drop GIF below" style="margin-bottom: 12px;">
           <div style="margin-bottom: 20px; display: flex; align-items: center;">
-            <button id="uploadNsfwToggleBtn" type="button" class="nsfw-pill">Mark as NSFW</button>
+            <div id="uploadNsfwPills" class="nsfw-pill-group">
+              <button type="button" class="nsfw-pill" data-category="suggestive">Suggestive</button>
+              <button type="button" class="nsfw-pill" data-category="offensive">Offensive</button>
+              <button type="button" class="nsfw-pill" data-category="sexual">Sexual</button>
+              <button type="button" class="nsfw-pill" data-category="nsfw">Other NSFW</button>
+            </div>
           </div>
         </div>
         <div id="uploadZone" class="upload-zone">
