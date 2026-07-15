@@ -221,14 +221,28 @@ fn parse_enabled_categories(param: Option<&str>) -> Vec<String> {
     }
 }
 
-fn is_locked(gif_categories: &[String], enabled_categories: &[String]) -> bool {
+fn effective_nsfw_categories(gif_categories: &[String]) -> Vec<&String> {
     let specific: Vec<&String> = gif_categories.iter().filter(|c| c.as_str() != "nsfw").collect();
-    let effective: Vec<&String> = if specific.is_empty() {
+    if specific.is_empty() {
         gif_categories.iter().collect()
     } else {
         specific
-    };
+    }
+}
+
+fn is_locked(gif_categories: &[String], enabled_categories: &[String]) -> bool {
+    let effective = effective_nsfw_categories(gif_categories);
     !effective.iter().all(|c| enabled_categories.contains(c))
+}
+
+fn nsfw_placeholder_label(gif_categories: &[String]) -> String {
+    let effective = effective_nsfw_categories(gif_categories);
+    if effective.len() == 1 && effective[0] == "nsfw" {
+        "NSFW".to_string()
+    } else {
+        let parts: Vec<String> = effective.iter().map(|c| c.to_uppercase()).collect();
+        format!("NSFW/{}", parts.join("/"))
+    }
 }
 
 #[derive(Deserialize)]
@@ -335,8 +349,17 @@ async fn get_gifs(jar: CookieJar, Query(q): Query<GifsQuery>, State(state): Stat
             let w = dims_db.get(&key).map(|d| d.w).unwrap_or(300.0);
             let h = dims_db.get(&key).map(|d| d.h).unwrap_or(400.0);
             
-            let svg_template = r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"> <defs> <filter id="f{hash}" x="-20%" y="-20%" width="140%" height="140%"> <feGaussianBlur stdDeviation="{blur}" /> </filter> </defs> <rect width="{w}" height="{h}" fill="{c2}" /> <circle cx="{cx1}" cy="{cy1}" r="{r1}" fill="{c1}" filter="url(#f{hash})" opacity="0.6" /> <circle cx="{cx2}" cy="{cy2}" r="{r2}" fill="{c2}" filter="url(#f{hash})" opacity="0.6" /> <circle cx="{cx3}" cy="{cy3}" r="{r3}" fill="{c1}" filter="url(#f{hash})" opacity="0.3" /> <rect width="{w}" height="{h}" fill="rgba(0,0,0,0.2)" /> <text x="{tx}" y="{ty}" font-family="sans-serif" font-weight="bold" font-size="{tsize}" fill="#ffffff" opacity="0.3" text-anchor="middle" dominant-baseline="middle" letter-spacing="4">NSFW</text> </svg>"##;
-            
+            let label = nsfw_placeholder_label(&gif_categories);
+            let tsize_base = w.min(h) * 0.1;
+            let label_len = label.chars().count() as f64;
+            let tsize = if label_len > 4.0 {
+                (tsize_base * 4.0 / label_len).max(tsize_base * 0.35)
+            } else {
+                tsize_base
+            };
+
+            let svg_template = r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"> <defs> <filter id="f{hash}" x="-20%" y="-20%" width="140%" height="140%"> <feGaussianBlur stdDeviation="{blur}" /> </filter> </defs> <rect width="{w}" height="{h}" fill="{c2}" /> <circle cx="{cx1}" cy="{cy1}" r="{r1}" fill="{c1}" filter="url(#f{hash})" opacity="0.6" /> <circle cx="{cx2}" cy="{cy2}" r="{r2}" fill="{c2}" filter="url(#f{hash})" opacity="0.6" /> <circle cx="{cx3}" cy="{cy3}" r="{r3}" fill="{c1}" filter="url(#f{hash})" opacity="0.3" /> <rect width="{w}" height="{h}" fill="rgba(0,0,0,0.2)" /> <text x="{tx}" y="{ty}" font-family="sans-serif" font-weight="bold" font-size="{tsize}" fill="#ffffff" opacity="0.3" text-anchor="middle" dominant-baseline="middle" letter-spacing="0.15em">{label}</text> </svg>"##;
+
             let svg = svg_template
                 .replace("{w}", &w.to_string())
                 .replace("{h}", &h.to_string())
@@ -355,7 +378,8 @@ async fn get_gifs(jar: CookieJar, Query(q): Query<GifsQuery>, State(state): Stat
                 .replace("{r3}", &(w.min(h)*0.3).to_string())
                 .replace("{tx}", &(w/2.0).to_string())
                 .replace("{ty}", &(h/2.0).to_string())
-                .replace("{tsize}", &(w.min(h)*0.1).to_string());
+                .replace("{tsize}", &tsize.to_string())
+                .replace("{label}", &label);
             
             use base64::{engine::general_purpose::STANDARD, Engine as _};
             let b64 = STANDARD.encode(svg);
@@ -1062,5 +1086,29 @@ mod tests {
         let enabled_both = vec!["offensive".to_string(), "sexual".to_string()];
         assert!(is_locked(&gif_cats, &enabled_offensive_only));
         assert!(!is_locked(&gif_cats, &enabled_both));
+    }
+
+    #[test]
+    fn nsfw_placeholder_label_generic_only() {
+        let gif_cats = vec!["nsfw".to_string()];
+        assert_eq!(nsfw_placeholder_label(&gif_cats), "NSFW");
+    }
+
+    #[test]
+    fn nsfw_placeholder_label_single_specific_category() {
+        let gif_cats = vec!["sexual".to_string()];
+        assert_eq!(nsfw_placeholder_label(&gif_cats), "NSFW/SEXUAL");
+    }
+
+    #[test]
+    fn nsfw_placeholder_label_drops_generic_when_specific_present() {
+        let gif_cats = vec!["sexual".to_string(), "nsfw".to_string()];
+        assert_eq!(nsfw_placeholder_label(&gif_cats), "NSFW/SEXUAL");
+    }
+
+    #[test]
+    fn nsfw_placeholder_label_joins_multiple_specific_categories() {
+        let gif_cats = vec!["offensive".to_string(), "sexual".to_string()];
+        assert_eq!(nsfw_placeholder_label(&gif_cats), "NSFW/OFFENSIVE/SEXUAL");
     }
 }
