@@ -119,6 +119,10 @@ body {
     justify-content: center;
     gap: 12px;
   }
+  #nsfwFilterGroup {
+    width: 100%;
+    justify-content: center;
+  }
   .main-search {
     width: 100%;
     max-width: 400px;
