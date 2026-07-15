@@ -29,6 +29,12 @@ const nsfwFilterPills = document.querySelectorAll('#nsfwFilterGroup .nsfw-pill')
 const NSFW_CATEGORIES = ['suggestive', 'offensive', 'sexual', 'nsfw'];
 const uploadNsfwPills = document.querySelectorAll('#uploadNsfwPills .nsfw-pill');
 
+function isCategorySetLocked(gifCategories, enabledCategories) {
+  const specific = gifCategories.filter(c => c !== 'nsfw');
+  const effective = specific.length > 0 ? specific : gifCategories;
+  return effective.length > 0 && !effective.every(c => enabledCategories.has(c));
+}
+
 let isLoggedIn = false;
 let uploadCategories = new Set();
 let currentPage = 1;
@@ -212,7 +218,7 @@ function renderGifs(gifs) {
       .map(t => t.toLowerCase())
       .filter(t => NSFW_CATEGORIES.includes(t));
     const isNsfw = gifCategories.length > 0;
-    const isLocked = isNsfw && !gifCategories.every(c => enabledCategories.has(c));
+    const isLocked = isCategorySetLocked(gifCategories, enabledCategories);
     const isHidden = !!gif.isHidden;
     const card = document.createElement('div');
     card.className = (isNsfw ? 'gif-card nsfw-card' : 'gif-card')
@@ -623,8 +629,7 @@ async function updateNsfwDom() {
       if (img && urlMap[key]) img.src = urlMap[key];
 
       const cardCategories = (card.dataset.categories || '').split(',').filter(Boolean);
-      const locked = cardCategories.length > 0 && !cardCategories.every(c => enabledCategories.has(c));
-      card.classList.toggle('locked', locked);
+      card.classList.toggle('locked', isCategorySetLocked(cardCategories, enabledCategories));
     });
   } catch(e) {
     console.error(e);

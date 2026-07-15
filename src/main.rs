@@ -222,7 +222,13 @@ fn parse_enabled_categories(param: Option<&str>) -> Vec<String> {
 }
 
 fn is_locked(gif_categories: &[String], enabled_categories: &[String]) -> bool {
-    !gif_categories.iter().all(|c| enabled_categories.contains(c))
+    let specific: Vec<&String> = gif_categories.iter().filter(|c| c.as_str() != "nsfw").collect();
+    let effective: Vec<&String> = if specific.is_empty() {
+        gif_categories.iter().collect()
+    } else {
+        specific
+    };
+    !effective.iter().all(|c| enabled_categories.contains(c))
 }
 
 #[derive(Deserialize)]
@@ -1033,5 +1039,28 @@ mod tests {
         let enabled_full = vec!["offensive".to_string(), "sexual".to_string()];
         assert!(is_locked(&gif_cats, &enabled_partial));
         assert!(!is_locked(&gif_cats, &enabled_full));
+    }
+
+    #[test]
+    fn is_locked_nsfw_tag_does_not_add_a_requirement_alongside_a_specific_category() {
+        let gif_cats = vec!["sexual".to_string(), "nsfw".to_string()];
+        let enabled_sexual_only = vec!["sexual".to_string()];
+        assert!(!is_locked(&gif_cats, &enabled_sexual_only));
+    }
+
+    #[test]
+    fn is_locked_nsfw_only_gif_still_requires_nsfw_enabled() {
+        let gif_cats = vec!["nsfw".to_string()];
+        assert!(is_locked(&gif_cats, &[]));
+        assert!(!is_locked(&gif_cats, &["nsfw".to_string()]));
+    }
+
+    #[test]
+    fn is_locked_nsfw_does_not_bypass_other_unenabled_specific_categories() {
+        let gif_cats = vec!["offensive".to_string(), "sexual".to_string(), "nsfw".to_string()];
+        let enabled_offensive_only = vec!["offensive".to_string()];
+        let enabled_both = vec!["offensive".to_string(), "sexual".to_string()];
+        assert!(is_locked(&gif_cats, &enabled_offensive_only));
+        assert!(!is_locked(&gif_cats, &enabled_both));
     }
 }
