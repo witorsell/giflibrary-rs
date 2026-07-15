@@ -245,6 +245,16 @@ fn nsfw_placeholder_label(gif_categories: &[String]) -> String {
     }
 }
 
+fn nsfw_placeholder_font_size(w: f64, h: f64, label: &str) -> f64 {
+    let base = w.min(h) * 0.1;
+    let label_len = label.chars().count() as f64;
+    // Bold sans-serif glyphs average ~0.62em wide; the 0.15em letter-spacing
+    // between characters adds roughly another 0.15em per character.
+    let est_width_factor = label_len * 0.77;
+    let fit_for_width = (w * 0.92) / est_width_factor;
+    base.min(fit_for_width).max(base * 0.6)
+}
+
 #[derive(Deserialize)]
 struct GifsQuery {
     page: Option<usize>,
@@ -350,13 +360,7 @@ async fn get_gifs(jar: CookieJar, Query(q): Query<GifsQuery>, State(state): Stat
             let h = dims_db.get(&key).map(|d| d.h).unwrap_or(400.0);
             
             let label = nsfw_placeholder_label(&gif_categories);
-            let tsize_base = w.min(h) * 0.1;
-            let label_len = label.chars().count() as f64;
-            let tsize = if label_len > 4.0 {
-                (tsize_base * 4.0 / label_len).max(tsize_base * 0.35)
-            } else {
-                tsize_base
-            };
+            let tsize = nsfw_placeholder_font_size(w, h, &label);
 
             let svg_template = r##"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"> <defs> <filter id="f{hash}" x="-20%" y="-20%" width="140%" height="140%"> <feGaussianBlur stdDeviation="{blur}" /> </filter> </defs> <rect width="{w}" height="{h}" fill="{c2}" /> <circle cx="{cx1}" cy="{cy1}" r="{r1}" fill="{c1}" filter="url(#f{hash})" opacity="0.6" /> <circle cx="{cx2}" cy="{cy2}" r="{r2}" fill="{c2}" filter="url(#f{hash})" opacity="0.6" /> <circle cx="{cx3}" cy="{cy3}" r="{r3}" fill="{c1}" filter="url(#f{hash})" opacity="0.3" /> <rect width="{w}" height="{h}" fill="rgba(0,0,0,0.2)" /> <text x="{tx}" y="{ty}" font-family="sans-serif" font-weight="bold" font-size="{tsize}" fill="#ffffff" opacity="0.3" text-anchor="middle" dominant-baseline="middle" letter-spacing="0.15em">{label}</text> </svg>"##;
 
@@ -1110,5 +1114,26 @@ mod tests {
     fn nsfw_placeholder_label_joins_multiple_specific_categories() {
         let gif_cats = vec!["offensive".to_string(), "sexual".to_string()];
         assert_eq!(nsfw_placeholder_label(&gif_cats), "NSFW/OFFENSIVE/SEXUAL");
+    }
+
+    #[test]
+    fn nsfw_placeholder_font_size_uses_base_size_when_label_fits() {
+        let size = nsfw_placeholder_font_size(850.0, 1403.0, "NSFW");
+        assert_eq!(size, 850.0_f64.min(1403.0) * 0.1);
+    }
+
+    #[test]
+    fn nsfw_placeholder_font_size_shrinks_for_long_labels_but_stays_above_floor() {
+        let base = 850.0_f64.min(1403.0) * 0.1;
+        let size = nsfw_placeholder_font_size(850.0, 1403.0, "NSFW/OFFENSIVE/SEXUAL");
+        assert!(size < base, "expected long label to shrink below base size");
+        assert!(size >= base * 0.6, "expected size to respect the readability floor");
+    }
+
+    #[test]
+    fn nsfw_placeholder_font_size_never_exceeds_base_size() {
+        let base = 300.0_f64.min(400.0) * 0.1;
+        let size = nsfw_placeholder_font_size(300.0, 400.0, "NSFW/SEXUAL");
+        assert!(size <= base);
     }
 }
