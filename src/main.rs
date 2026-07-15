@@ -810,7 +810,7 @@ async fn serve_html(jar: CookieJar, Path(slug_param): Path<String>, headers: Hea
         return axum::response::Redirect::permanent(&format!("/gif/{}", slug)).into_response();
     }
     
-    let is_nsfw = tags.iter().any(|t| t.to_lowercase() == "nsfw");
+    let is_nsfw = !gif_nsfw_categories(&tags).is_empty();
     let filter_style = if is_nsfw { "filter: brightness(0.85);" } else { "" };
     
     let escaped_tags: Vec<String> = tags.iter().map(|t| t.replace("&", "&amp;")
