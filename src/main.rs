@@ -230,7 +230,7 @@ struct GifsQuery {
     page: Option<usize>,
     limit: Option<usize>,
     q: Option<String>,
-    nsfw: Option<String>,
+    nsfw_categories: Option<String>,
 }
 
 async fn fetch_all_gifs(state: &AppState) -> Result<Vec<(String, i64, i64)>, String> {
@@ -279,13 +279,14 @@ async fn get_gifs(jar: CookieJar, Query(q): Query<GifsQuery>, State(state): Stat
     let db = get_db();
     let dims_db = get_dims_db();
 
-    let include_nsfw = q.nsfw.as_deref() == Some("true");
+    let enabled_categories = parse_enabled_categories(q.nsfw_categories.as_deref());
     let is_admin = jar.get("auth_token").map(|c| c.value() == state.master_key).unwrap_or(false);
 
     let mut gifs: Vec<GifItem> = all_contents.into_iter().filter_map(|(key, last_mod, size)| {
         let tags = db.get(&key).cloned().unwrap_or_default();
 
-        let is_nsfw = tags.iter().any(|t| t.to_lowercase() == "nsfw");
+        let gif_categories = gif_nsfw_categories(&tags);
+        let is_nsfw = !gif_categories.is_empty();
         let is_hidden = tags.iter().any(|t| t.to_lowercase() == "hidden");
 
         if is_hidden && !is_admin {
@@ -309,7 +310,7 @@ async fn get_gifs(jar: CookieJar, Query(q): Query<GifsQuery>, State(state): Stat
         let mut url = format!("{}/{}", state.r2_public_url, key);
         let mut is_nsfw_placeholder = None;
         
-        if is_nsfw && !include_nsfw {
+        if is_nsfw && is_locked(&gif_categories, &enabled_categories) {
             let hash = hash_string(&key).abs();
             let palettes = [
                 ["#ff0080", "#7928ca"],
