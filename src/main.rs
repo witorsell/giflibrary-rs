@@ -201,6 +201,30 @@ fn levenshtein(a: &str, b: &str) -> usize {
     matrix[b_chars.len()][a_chars.len()]
 }
 
+const NSFW_CATEGORIES: [&str; 4] = ["suggestive", "offensive", "sexual", "nsfw"];
+
+fn gif_nsfw_categories(tags: &[String]) -> Vec<String> {
+    tags.iter()
+        .map(|t| t.to_lowercase())
+        .filter(|t| NSFW_CATEGORIES.contains(&t.as_str()))
+        .collect()
+}
+
+fn parse_enabled_categories(param: Option<&str>) -> Vec<String> {
+    match param {
+        Some(s) if !s.trim().is_empty() => s
+            .split(',')
+            .map(|c| c.trim().to_lowercase())
+            .filter(|c| NSFW_CATEGORIES.contains(&c.as_str()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn is_locked(gif_categories: &[String], enabled_categories: &[String]) -> bool {
+    !gif_categories.iter().all(|c| enabled_categories.contains(c))
+}
+
 #[derive(Deserialize)]
 struct GifsQuery {
     page: Option<usize>,
@@ -933,4 +957,80 @@ async fn main() {
     println!("Server running on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gif_nsfw_categories_extracts_reserved_tags_case_insensitively() {
+        let tags = vec!["meme".to_string(), "NSFW".to_string(), "funny".to_string()];
+        assert_eq!(gif_nsfw_categories(&tags), vec!["nsfw".to_string()]);
+    }
+
+    #[test]
+    fn gif_nsfw_categories_returns_multiple_matches_in_tag_order() {
+        let tags = vec!["offensive".to_string(), "sexual".to_string(), "funny".to_string()];
+        assert_eq!(
+            gif_nsfw_categories(&tags),
+            vec!["offensive".to_string(), "sexual".to_string()]
+        );
+    }
+
+    #[test]
+    fn gif_nsfw_categories_empty_for_sfw_gif() {
+        let tags = vec!["meme".to_string(), "funny".to_string()];
+        assert!(gif_nsfw_categories(&tags).is_empty());
+    }
+
+    #[test]
+    fn parse_enabled_categories_splits_trims_and_lowercases() {
+        assert_eq!(
+            parse_enabled_categories(Some("Suggestive, offensive")),
+            vec!["suggestive".to_string(), "offensive".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_enabled_categories_drops_unknown_values() {
+        assert_eq!(
+            parse_enabled_categories(Some("suggestive,bogus")),
+            vec!["suggestive".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_enabled_categories_empty_for_none_or_blank() {
+        assert!(parse_enabled_categories(None).is_empty());
+        assert!(parse_enabled_categories(Some("")).is_empty());
+    }
+
+    #[test]
+    fn is_locked_false_for_sfw_gif() {
+        assert!(!is_locked(&[], &[]));
+        assert!(!is_locked(&[], &["offensive".to_string()]));
+    }
+
+    #[test]
+    fn is_locked_true_when_category_not_enabled() {
+        let gif_cats = vec!["offensive".to_string()];
+        assert!(is_locked(&gif_cats, &[]));
+    }
+
+    #[test]
+    fn is_locked_false_when_single_category_enabled() {
+        let gif_cats = vec!["offensive".to_string()];
+        let enabled = vec!["offensive".to_string()];
+        assert!(!is_locked(&gif_cats, &enabled));
+    }
+
+    #[test]
+    fn is_locked_requires_all_of_gifs_categories_enabled() {
+        let gif_cats = vec!["offensive".to_string(), "sexual".to_string()];
+        let enabled_partial = vec!["offensive".to_string()];
+        let enabled_full = vec!["offensive".to_string(), "sexual".to_string()];
+        assert!(is_locked(&gif_cats, &enabled_partial));
+        assert!(!is_locked(&gif_cats, &enabled_full));
+    }
 }
