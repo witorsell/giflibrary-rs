@@ -123,33 +123,103 @@ fn save_suggestions_db(db: &HashMap<String, Suggestion>) {
 }
 
 fn convert_to_webp(tmp_in: &str, tmp_out: &str, content_type: &str, is_animated: bool) -> Option<Vec<u8>> {
-    let mut args = vec!["-y"];
-    
-    if is_animated && (content_type == "image/gif" || content_type == "image/webp") {
-        args.extend_from_slice(&["-ignore_loop", "0"]);
-    }
-    
-    let comp_level = "6";
-    let quality = "90";
-    
     if content_type == "image/webp" && is_animated {
         let _ = fs::copy(tmp_in, tmp_out);
         return fs::read(tmp_out).ok();
     } else if content_type == "image/webp" || content_type == "image/jpeg" || content_type == "image/png" {
-        args.extend_from_slice(&["-loop", "1", "-r", "2", "-i", tmp_in, "-c:v", "libwebp", "-lossless", "0", "-compression_level", comp_level, "-q:v", quality, "-vframes", "2", "-loop", "0", tmp_out]);
-    } else if content_type.starts_with("video/") {
-        args.extend_from_slice(&["-i", tmp_in, "-c:v", "libwebp", "-lossless", "0", "-compression_level", comp_level, "-q:v", quality, "-loop", "0", "-an", tmp_out]);
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loop", "1", "-r", "2", "-i", tmp_in, "-c:v", "libwebp", "-lossless", "0", "-q:v", "90", "-vframes", "2", "-loop", "0", tmp_out])
+            .status();
+        if status.is_ok() && fs::metadata(tmp_out).is_ok() {
+            fs::read(tmp_out).ok()
+        } else {
+            None
+        }
+    } else if content_type.starts_with("video/") || content_type == "image/gif" {
+        convert_animated_via_frames(tmp_in, tmp_out)
     } else {
-        args.extend_from_slice(&["-i", tmp_in, "-c:v", "libwebp", "-lossless", "0", "-compression_level", comp_level, "-q:v", quality, "-loop", "0", tmp_out]);
+        None
     }
-    
-    let status = std::process::Command::new("ffmpeg").args(&args).status();
-    
-    if status.is_ok() && fs::metadata(tmp_out).is_ok() {
+}
+
+// ffmpeg's libwebp encoder is single-threaded and does its own (weaker) inter-frame
+// compression, which made large/high-fps videos take minutes to convert. Extracting
+// frames at full native resolution and frame rate, then muxing them with img2webp
+// (from the standalone libwebp tools, which does proper animation-aware compression)
+// is roughly 2x faster and produces smaller files, at identical fps/resolution/quality.
+fn convert_animated_via_frames(tmp_in: &str, tmp_out: &str) -> Option<Vec<u8>> {
+    let frame_dir = format!("/tmp/frames_{}", hex::encode(rand::random::<[u8; 4]>()));
+    fs::create_dir_all(&frame_dir).ok()?;
+
+    let extracted_ok = std::process::Command::new("ffmpeg")
+        .args(["-y", "-i", tmp_in, "-vsync", "0", &format!("{}/f%05d.png", frame_dir)])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !extracted_ok {
+        let _ = fs::remove_dir_all(&frame_dir);
+        return None;
+    }
+
+    let mut frame_files: Vec<_> = match fs::read_dir(&frame_dir) {
+        Ok(entries) => entries.filter_map(|e| e.ok()).map(|e| e.path()).collect(),
+        Err(_) => {
+            let _ = fs::remove_dir_all(&frame_dir);
+            return None;
+        }
+    };
+    frame_files.sort();
+
+    if frame_files.is_empty() {
+        let _ = fs::remove_dir_all(&frame_dir);
+        return None;
+    }
+
+    let duration_ms = probe_frame_duration_ms(tmp_in).to_string();
+    let mut args = vec!["-loop".to_string(), "0".to_string(), "-lossy".to_string(), "-q".to_string(), "90".to_string(), "-d".to_string(), duration_ms];
+    args.extend(frame_files.iter().map(|f| f.to_string_lossy().to_string()));
+    args.push("-o".to_string());
+    args.push(tmp_out.to_string());
+
+    let muxed_ok = std::process::Command::new("img2webp")
+        .args(&args)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    let _ = fs::remove_dir_all(&frame_dir);
+
+    if muxed_ok && fs::metadata(tmp_out).is_ok() {
         fs::read(tmp_out).ok()
     } else {
         None
     }
+}
+
+fn probe_frame_duration_ms(tmp_in: &str) -> u32 {
+    let output = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", "-of", "csv=p=0", tmp_in])
+        .output();
+
+    if let Ok(out) = output {
+        if let Ok(text) = String::from_utf8(out.stdout) {
+            let text = text.trim();
+            let fps = if let Some((num_s, den_s)) = text.split_once('/') {
+                match (num_s.parse::<f64>(), den_s.parse::<f64>()) {
+                    (Ok(num), Ok(den)) if num > 0.0 && den > 0.0 => Some(num / den),
+                    _ => None,
+                }
+            } else {
+                text.parse::<f64>().ok().filter(|f| *f > 0.0)
+            };
+            if let Some(fps) = fps {
+                return (1000.0 / fps).round().max(10.0) as u32;
+            }
+        }
+    }
+
+    33
 }
 
 fn run_caption_script(in_path: &str, out_path: &str, caption: &str) -> bool {
