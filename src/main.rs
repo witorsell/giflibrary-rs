@@ -255,6 +255,27 @@ fn nsfw_placeholder_font_size(w: f64, h: f64, label: &str) -> f64 {
     base.min(fit_for_width).max(base * 0.6)
 }
 
+fn caption_word_tags(caption: &str) -> Vec<String> {
+    caption
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| c.is_ascii_punctuation()).to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+fn merge_caption_tags(existing_tags: &[String], caption: &str) -> Vec<String> {
+    let mut tags: Vec<String> = existing_tags.to_vec();
+    for word in caption_word_tags(caption) {
+        if !tags.contains(&word) {
+            tags.push(word);
+        }
+    }
+    if !tags.iter().any(|t| t == "caption") {
+        tags.push("caption".to_string());
+    }
+    tags
+}
+
 #[derive(Deserialize)]
 struct GifsQuery {
     page: Option<usize>,
@@ -1135,5 +1156,48 @@ mod tests {
         let base = 300.0_f64.min(400.0) * 0.1;
         let size = nsfw_placeholder_font_size(300.0, 400.0, "NSFW/SEXUAL");
         assert!(size <= base);
+    }
+
+    #[test]
+    fn caption_word_tags_splits_lowercases_and_trims_punctuation() {
+        let tags = caption_word_tags("SWIPE UP to get this ringtone!");
+        assert_eq!(
+            tags,
+            vec!["swipe", "up", "to", "get", "this", "ringtone"]
+                .into_iter().map(String::from).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn caption_word_tags_empty_for_blank_input() {
+        assert!(caption_word_tags("").is_empty());
+        assert!(caption_word_tags("   ").is_empty());
+    }
+
+    #[test]
+    fn merge_caption_tags_adds_caption_tag() {
+        let existing = vec!["meme".to_string()];
+        let merged = merge_caption_tags(&existing, "hello world");
+        assert!(merged.contains(&"caption".to_string()));
+    }
+
+    #[test]
+    fn merge_caption_tags_dedupes_against_existing_manual_tags() {
+        let existing = vec!["bro".to_string(), "dance".to_string()];
+        let merged = merge_caption_tags(&existing, "bro dance party");
+        let bro_count = merged.iter().filter(|t| *t == "bro").count();
+        assert_eq!(bro_count, 1);
+        assert!(merged.contains(&"party".to_string()));
+    }
+
+    #[test]
+    fn merge_caption_tags_preserves_manual_tags_then_appends_caption_words_then_caption_tag() {
+        let existing = vec!["exploit".to_string(), "community".to_string()];
+        let merged = merge_caption_tags(&existing, "can ur external do this");
+        assert_eq!(
+            merged,
+            vec!["exploit", "community", "can", "ur", "external", "do", "this", "caption"]
+                .into_iter().map(String::from).collect::<Vec<_>>()
+        );
     }
 }
