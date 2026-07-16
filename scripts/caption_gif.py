@@ -9,7 +9,7 @@ FONT_PATH = "/usr/share/fonts/truetype/msttcorefonts/arialbd.ttf"
 MIN_FONT_SIZE = 14
 MAX_LINES_BEFORE_SHRINK = 2
 WIDTH_FRACTION = 0.92
-VERTICAL_PADDING = 20
+VERTICAL_PADDING_FRACTION = 0.45
 LINE_SPACING_FRACTION = 1.15
 
 
@@ -41,19 +41,32 @@ def fit_caption(draw, text, image_width):
         font_size -= 2
 
 
-def caption_frame(frame, lines, font, bar_height):
+def line_spacing_px(font):
+    return int(font.size * (LINE_SPACING_FRACTION - 1.0))
+
+
+def text_bbox(draw, wrapped_text, font):
+    return draw.multiline_textbbox(
+        (0, 0), wrapped_text, font=font, align="center", spacing=line_spacing_px(font)
+    )
+
+
+def caption_frame(frame, wrapped_text, font, bbox, bar_height):
     w, h = frame.size
     canvas = Image.new("RGB", (w, h + bar_height), "white")
     canvas.paste(frame, (0, bar_height))
     draw = ImageDraw.Draw(canvas)
-    line_height = font.size * LINE_SPACING_FRACTION
-    total_text_height = line_height * len(lines)
-    y = (bar_height - total_text_height) / 2
-    for line in lines:
-        line_width = draw.textlength(line, font=font)
-        x = (w - line_width) / 2
-        draw.text((x, y), line, font=font, fill="black")
-        y += line_height
+    left, top, right, _bottom = bbox
+    padding = font.size * VERTICAL_PADDING_FRACTION
+    # Anchor by the real ink bounding box, not the font's nominal em-box, so the
+    # rendered glyphs end up centered with equal padding above and below
+    # regardless of how much a given font's ascent/descent metrics overshoot
+    # its visible glyphs.
+    x = (w - (right - left)) / 2 - left
+    y = padding - top
+    draw.multiline_text(
+        (x, y), wrapped_text, font=font, fill="black", align="center", spacing=line_spacing_px(font)
+    )
     return canvas
 
 
@@ -70,15 +83,17 @@ def main():
     probe = Image.new("RGB", src.size)
     probe_draw = ImageDraw.Draw(probe)
     font, lines = fit_caption(probe_draw, caption, src.size[0])
-    line_height = font.size * LINE_SPACING_FRACTION
-    bar_height = int(line_height * len(lines) + VERTICAL_PADDING * 2)
+    wrapped_text = "\n".join(lines)
+    bbox = text_bbox(probe_draw, wrapped_text, font)
+    padding = font.size * VERTICAL_PADDING_FRACTION
+    bar_height = int((bbox[3] - bbox[1]) + padding * 2)
 
     frames = []
     durations = []
     for i in range(n_frames):
         src.seek(i)
         frame = src.convert("RGB")
-        frames.append(caption_frame(frame, lines, font, bar_height))
+        frames.append(caption_frame(frame, wrapped_text, font, bbox, bar_height))
         durations.append(src.info.get("duration", 100))
 
     if n_frames > 1:
