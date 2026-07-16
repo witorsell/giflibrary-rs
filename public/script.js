@@ -11,6 +11,7 @@ const uploadContent = document.getElementById('uploadContent');
 const uploadLoader = document.getElementById('uploadLoader');
 const searchInput = document.getElementById('searchInput');
 const uploadTags = document.getElementById('uploadTags');
+const uploadCaption = document.getElementById('uploadCaption');
 
 const uploadPreview = document.getElementById('uploadPreview');
 const selectedFileName = document.getElementById('selectedFileName');
@@ -430,6 +431,9 @@ if (confirmUploadBtn) {
       }
       formData.append('tags', tagsVal);
     }
+    if (uploadCaption && uploadCaption.value.trim()) {
+      formData.append('caption', uploadCaption.value.trim());
+    }
 
     uploadContent.style.display = 'none';
     uploadLoader.style.display = 'block';
@@ -446,6 +450,7 @@ if (confirmUploadBtn) {
       if (res.ok) {
         showToast('Uploaded successfully');
         if (uploadTags) uploadTags.value = '';
+        if (uploadCaption) uploadCaption.value = '';
         uploadCategories.clear();
         uploadNsfwPills.forEach(pill => pill.classList.remove('active'));
         pendingFile = null;
