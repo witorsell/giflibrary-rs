@@ -362,14 +362,25 @@ fn caption_word_tags(caption: &str) -> Vec<String> {
 }
 
 fn merge_caption_tags(existing_tags: &[String], caption: &str) -> Vec<String> {
-    let mut tags: Vec<String> = existing_tags.to_vec();
+    let (nsfw_tags, mut tags): (Vec<String>, Vec<String>) = existing_tags
+        .iter()
+        .cloned()
+        .partition(|t| NSFW_CATEGORIES.contains(&t.as_str()));
+
     for word in caption_word_tags(caption) {
-        if !tags.contains(&word) {
+        if !tags.contains(&word) && !nsfw_tags.contains(&word) {
             tags.push(word);
         }
     }
     if !tags.iter().any(|t| t == "caption") {
         tags.push("caption".to_string());
+    }
+    // NSFW category tags always trail the caption tag, matching the existing
+    // hand-tagged gifs' convention (e.g. [..word tags.., "caption", "suggestive", "nsfw"]).
+    for nsfw_tag in nsfw_tags {
+        if !tags.contains(&nsfw_tag) {
+            tags.push(nsfw_tag);
+        }
     }
     tags
 }
@@ -1321,6 +1332,17 @@ mod tests {
         assert_eq!(
             merged,
             vec!["exploit", "community", "can", "ur", "external", "do", "this", "caption"]
+                .into_iter().map(String::from).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn merge_caption_tags_moves_nsfw_categories_after_the_caption_tag() {
+        let existing = vec!["sexual".to_string(), "bro".to_string(), "nsfw".to_string()];
+        let merged = merge_caption_tags(&existing, "hello bro");
+        assert_eq!(
+            merged,
+            vec!["bro", "hello", "caption", "sexual", "nsfw"]
                 .into_iter().map(String::from).collect::<Vec<_>>()
         );
     }
