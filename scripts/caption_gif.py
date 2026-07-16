@@ -2,10 +2,11 @@
 """Composites an iFunny/ESMBot-style caption bar onto every frame of a webp
 and re-encodes the result. Usage: caption_gif.py <in.webp> <out.webp> <caption text>
 """
+import os
 import sys
 from PIL import Image, ImageDraw, ImageFont
 
-FONT_PATH = "/usr/share/fonts/truetype/msttcorefonts/arialbd.ttf"
+FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "BarlowCondensed-ExtraBold.ttf")
 MIN_FONT_SIZE = 14
 MAX_LINES_BEFORE_SHRINK = 2
 WIDTH_FRACTION = 0.92
@@ -31,7 +32,7 @@ def wrap_text(draw, text, font, max_width):
 
 
 def fit_caption(draw, text, image_width):
-    font_size = max(int(image_width * 0.09), MIN_FONT_SIZE)
+    font_size = max(int(image_width * 0.11), MIN_FONT_SIZE)
     max_width = image_width * WIDTH_FRACTION
     while True:
         font = ImageFont.truetype(FONT_PATH, font_size)
