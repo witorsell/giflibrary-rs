@@ -73,8 +73,7 @@ def test_long_caption_grows_bar_taller_than_short_caption():
         run_caption(
             long_in,
             long_out,
-            "this caption is deliberately long enough that it must wrap across "
-            "several lines to fit within the frame width",
+            "this caption is deliberately extremely long and repeats itself many many times so that even at the smallest allowed font size it still needs several separate lines to fit within the frame width without running off the edge of the image entirely",
         )
 
         short_h = Image.open(short_out).size[1]

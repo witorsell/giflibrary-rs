@@ -6,7 +6,7 @@ import sys
 from PIL import Image, ImageDraw, ImageFont
 
 FONT_PATH = "/usr/share/fonts/truetype/msttcorefonts/arialbd.ttf"
-MIN_FONT_SIZE = 20
+MIN_FONT_SIZE = 14
 MAX_LINES_BEFORE_SHRINK = 2
 WIDTH_FRACTION = 0.92
 VERTICAL_PADDING = 20
