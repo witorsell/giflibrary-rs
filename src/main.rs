@@ -152,6 +152,33 @@ fn convert_to_webp(tmp_in: &str, tmp_out: &str, content_type: &str, is_animated:
     }
 }
 
+fn run_caption_script(in_path: &str, out_path: &str, caption: &str) -> bool {
+    let mut child = match Command::new("python3")
+        .args(["scripts/caption_gif.py", in_path, out_path, caption])
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(30);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success() && fs::metadata(out_path).is_ok(),
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
 async fn auth_status(jar: CookieJar, State(state): State<AppState>) -> impl IntoResponse {
     let logged_in = jar.get("auth_token").map(|c| c.value() == state.master_key).unwrap_or(false);
     let mut headers = axum::http::HeaderMap::new();
@@ -516,7 +543,8 @@ async fn upload_gif(
     let mut file_data: Option<axum::body::Bytes> = None;
     let mut content_type = String::new();
     let mut tags: Vec<String> = Vec::new();
-    
+    let mut caption = String::new();
+
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
         if name == "gif" {
@@ -528,13 +556,17 @@ async fn upload_gif(
             if let Ok(text) = field.text().await {
                 tags = text.split(',').map(|s: &str| s.trim().to_lowercase()).filter(|s: &String| !s.is_empty()).collect();
             }
+        } else if name == "caption" {
+            if let Ok(text) = field.text().await {
+                caption = text.trim().to_string();
+            }
         }
     }
-    
+
     let Some(data) = file_data else {
         return (StatusCode::BAD_REQUEST, "No file").into_response();
     };
-    
+
     let allowed = ["image/gif", "image/jpeg", "image/png", "image/webp", "video/mp4", "video/webm", "video/quicktime"];
     if !allowed.contains(&content_type.as_str()) {
         return (StatusCode::BAD_REQUEST, "Invalid file type. Only images and videos are allowed.").into_response();
@@ -542,15 +574,36 @@ async fn upload_gif(
 
     let tmp_in = format!("/tmp/in_{}.tmp", hex::encode(rand::random::<[u8; 4]>()));
     let tmp_out = format!("/tmp/out_{}.webp", hex::encode(rand::random::<[u8; 4]>()));
-    
+
     fs::write(&tmp_in, &data).unwrap();
     let is_animated = data.windows(4).any(|w| w == b"ANIM");
-    
-    let final_data = convert_to_webp(&tmp_in, &tmp_out, &content_type, is_animated).unwrap_or_else(|| data.to_vec());
-    
+
+    let mut final_data = convert_to_webp(&tmp_in, &tmp_out, &content_type, is_animated).unwrap_or_else(|| data.to_vec());
+
     let _ = fs::remove_file(&tmp_in);
     let _ = fs::remove_file(&tmp_out);
-    
+
+    if !caption.is_empty() {
+        let cap_in = format!("/tmp/cap_in_{}.webp", hex::encode(rand::random::<[u8; 4]>()));
+        let cap_out = format!("/tmp/cap_out_{}.webp", hex::encode(rand::random::<[u8; 4]>()));
+        fs::write(&cap_in, &final_data).unwrap();
+
+        let captioned_ok = run_caption_script(&cap_in, &cap_out, &caption);
+        if captioned_ok {
+            if let Ok(captioned) = fs::read(&cap_out) {
+                final_data = captioned;
+                tags = merge_caption_tags(&tags, &caption);
+            }
+        }
+
+        let _ = fs::remove_file(&cap_in);
+        let _ = fs::remove_file(&cap_out);
+
+        if !captioned_ok {
+            return (StatusCode::BAD_REQUEST, "Captioning failed").into_response();
+        }
+    }
+
     let key = format!("{}.webp", hex::encode(rand::random::<[u8; 8]>()));
     
     let _guard = state.db_mutex.lock().await;
