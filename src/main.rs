@@ -170,6 +170,7 @@ fn run_caption_script(in_path: &str, out_path: &str, caption: &str) -> bool {
             Ok(None) => {
                 if start.elapsed() > timeout {
                     let _ = child.kill();
+                    let _ = child.wait();
                     return false;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
