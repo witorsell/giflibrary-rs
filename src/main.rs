@@ -16,7 +16,7 @@ use std::{
     fs,
     net::SocketAddr,
     path::PathBuf,
-    process::Command,
+    process::{Command, Stdio},
     sync::Arc,
 };
 use tokio::sync::Mutex;
@@ -175,6 +175,8 @@ fn convert_to_webp(tmp_in: &str, tmp_out: &str, content_type: &str, is_animated:
     } else if content_type == "image/webp" || content_type == "image/jpeg" || content_type == "image/png" {
         let status = std::process::Command::new("ffmpeg")
             .args(["-y", "-loop", "1", "-r", "2", "-i", tmp_in, "-c:v", "libwebp", "-lossless", "0", "-q:v", "90", "-vframes", "2", "-loop", "0", tmp_out])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status();
         if status.is_ok() && fs::metadata(tmp_out).is_ok() {
             fs::read(tmp_out).ok()
@@ -199,6 +201,8 @@ fn convert_animated_via_frames(tmp_in: &str, tmp_out: &str) -> Option<Vec<u8>> {
 
     let extracted_ok = std::process::Command::new("ffmpeg")
         .args(["-y", "-i", tmp_in, "-vsync", "0", &format!("{}/f%05d.png", frame_dir)])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -230,6 +234,8 @@ fn convert_animated_via_frames(tmp_in: &str, tmp_out: &str) -> Option<Vec<u8>> {
 
     let muxed_ok = std::process::Command::new("img2webp")
         .args(&args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -271,6 +277,8 @@ fn probe_frame_duration_ms(tmp_in: &str) -> u32 {
 fn run_caption_script(in_path: &str, out_path: &str, caption: &str) -> bool {
     let mut child = match Command::new("python3")
         .args(["scripts/caption_gif.py", in_path, out_path, caption])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
     {
         Ok(c) => c,
@@ -750,6 +758,8 @@ fn run_ytdlp_download(url: &str, dir: &str) -> bool {
     let output_template = format!("{}/%(autonumber)s_%(id)s.%(ext)s", dir);
     let mut child = match Command::new("yt-dlp")
         .args(["-f", "bv*/b", "--max-filesize", "300M", "-o", output_template.as_str(), url])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
     {
         Ok(c) => c,
@@ -782,6 +792,8 @@ fn run_gallerydl_download(url: &str, dir: &str) -> bool {
     // from each tool.
     let mut child = match Command::new("gallery-dl")
         .args(["-o", "videos=false", "-D", dir, url])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
     {
         Ok(c) => c,
@@ -1499,26 +1511,27 @@ async fn main() {
 mod tests {
     use super::*;
 
+    // synthetic snowflake ids built from an arbitrary reference timestamp, not
+    // tied to any real tweet: a "tweet" id, its own media (uploaded 5s earlier,
+    // same as attaching media while composing), and a "quoted" media id (uploaded
+    // 10 hours earlier, same shape as quoting an older, unrelated tweet).
+    const TEST_TWEET_ID: u64 = 1724551110456246272;
+    const TEST_OWN_MEDIA_ID: u64 = 1724551089484726272;
+    const TEST_QUOTED_MEDIA_ID: u64 = 1724400115512246272;
+
     #[test]
     fn is_quoted_tweet_media_keeps_media_uploaded_moments_before_tweet() {
-        // real ids from a quote-RT: the tweet's own attached video was uploaded
-        // ~5s before the tweet itself, well under the threshold.
-        let tweet_id = 2078403356280672523u64;
-        let own_media_id = 2078403334122192896u64;
-        assert!(!is_quoted_tweet_media(tweet_id, own_media_id));
+        assert!(!is_quoted_tweet_media(TEST_TWEET_ID, TEST_OWN_MEDIA_ID));
     }
 
     #[test]
     fn is_quoted_tweet_media_drops_media_from_the_quoted_post() {
-        // same tweet, but the quoted post's video, uploaded ~10 hours earlier.
-        let tweet_id = 2078403356280672523u64;
-        let quoted_media_id = 2078250025574879232u64;
-        assert!(is_quoted_tweet_media(tweet_id, quoted_media_id));
+        assert!(is_quoted_tweet_media(TEST_TWEET_ID, TEST_QUOTED_MEDIA_ID));
     }
 
     #[test]
     fn extract_twitter_status_id_parses_x_and_twitter_urls() {
-        assert_eq!(extract_twitter_status_id("https://x.com/i/status/2078403356280672523"), Some(2078403356280672523));
+        assert_eq!(extract_twitter_status_id(&format!("https://x.com/i/status/{TEST_TWEET_ID}")), Some(TEST_TWEET_ID));
         assert_eq!(extract_twitter_status_id("https://twitter.com/someuser/status/123"), Some(123));
     }
 
@@ -1529,8 +1542,8 @@ mod tests {
 
     #[test]
     fn extract_media_id_from_filename_parses_autonumber_id_stem() {
-        let path = PathBuf::from("/tmp/ytdl_abc/00002_2078250025574879232.mp4");
-        assert_eq!(extract_media_id_from_filename(&path), Some(2078250025574879232));
+        let path = PathBuf::from(format!("/tmp/ytdl_abc/00002_{TEST_QUOTED_MEDIA_ID}.mp4"));
+        assert_eq!(extract_media_id_from_filename(&path), Some(TEST_QUOTED_MEDIA_ID));
     }
 
     #[test]
