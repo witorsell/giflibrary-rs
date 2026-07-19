@@ -439,6 +439,15 @@ function renderUrlCandidates(candidates, url) {
     ? `${url} (${candidates.length} items, pick one)`
     : url;
   uploadPreview.style.display = 'block';
+  // fetched results are showing; disable Fetch so a misclick reaching for
+  // Upload Now can't silently re-fetch and discard the picked candidate.
+  fetchUrlBtn.disabled = true;
+}
+
+if (uploadUrlInput) {
+  uploadUrlInput.addEventListener('input', () => {
+    fetchUrlBtn.disabled = false;
+  });
 }
 
 if (fetchUrlBtn) {
@@ -454,6 +463,7 @@ if (fetchUrlBtn) {
     fetchUrlBtn.textContent = 'Fetching...';
     if (fetchUrlLoader) fetchUrlLoader.style.display = 'block';
 
+    let succeeded = false;
     try {
       const res = await fetch('/api/fetch-url', {
         method: 'POST',
@@ -465,13 +475,17 @@ if (fetchUrlBtn) {
       if (res.ok && data.success) {
         pendingFile = null;
         renderUrlCandidates(data.candidates, url);
+        succeeded = true;
       } else {
         showToast(data.error || 'Fetch failed');
       }
     } catch (err) {
       showToast('Fetch error');
     } finally {
-      fetchUrlBtn.disabled = false;
+      // on success, renderUrlCandidates already disabled Fetch on purpose;
+      // leave it that way so a misclick reaching for Upload Now can't
+      // silently re-fetch and discard the candidate the user just picked.
+      fetchUrlBtn.disabled = succeeded;
       uploadUrlInput.disabled = false;
       fetchUrlBtn.textContent = 'Fetch';
       if (fetchUrlLoader) fetchUrlLoader.style.display = 'none';
@@ -489,6 +503,7 @@ function previewFile(file) {
   pendingUrlToken = null;
   urlCandidatesGrid.style.display = 'none';
   confirmUploadBtn.disabled = false;
+  if (fetchUrlBtn) fetchUrlBtn.disabled = false;
   selectedFileName.textContent = file.name;
   uploadPreview.style.display = 'block';
 }
@@ -542,6 +557,7 @@ if (confirmUploadBtn) {
         pendingFile = null;
         pendingUrlToken = null;
         urlCandidatesGrid.style.display = 'none';
+        if (fetchUrlBtn) fetchUrlBtn.disabled = false;
         loadGifs(true);
       } else {
         showToast('Upload failed');
