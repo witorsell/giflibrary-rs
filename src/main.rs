@@ -141,22 +141,17 @@ fn content_type_for_extension(ext: &str) -> Option<&'static str> {
     }
 }
 
-fn find_downloaded_file(base_path: &str) -> Option<PathBuf> {
-    let base = std::path::Path::new(base_path);
-    let dir = base.parent()?;
-    let base_name = base.file_name()?.to_str()?;
-    let mut entries: Vec<PathBuf> = fs::read_dir(dir).ok()?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.starts_with(base_name))
-                .unwrap_or(false)
-        })
-        .collect();
-    entries.sort();
-    entries.into_iter().next()
+fn list_downloaded_files(dir: &str) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .collect(),
+        Err(_) => return Vec::new(),
+    };
+    files.sort();
+    files
 }
 
 fn sweep_expired_pending(pending: &mut HashMap<String, (PathBuf, std::time::Instant)>) {
@@ -714,9 +709,10 @@ async fn finalize_upload(
     }
 }
 
-fn run_ytdlp_download(url: &str, output_template: &str) -> bool {
+fn run_ytdlp_download(url: &str, dir: &str) -> bool {
+    let output_template = format!("{}/%(autonumber)s.%(ext)s", dir);
     let mut child = match Command::new("yt-dlp")
-        .args(["-f", "bv*/b", "--no-playlist", "--max-filesize", "300M", "-o", output_template, url])
+        .args(["-f", "bv*/b", "--max-filesize", "300M", "-o", output_template.as_str(), url])
         .spawn()
     {
         Ok(c) => c,
@@ -725,6 +721,34 @@ fn run_ytdlp_download(url: &str, output_template: &str) -> bool {
 
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(90);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
+fn run_gallerydl_download(url: &str, dir: &str) -> bool {
+    let mut child = match Command::new("gallery-dl")
+        .args(["-D", dir, url])
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(60);
 
     loop {
         match child.try_wait() {
@@ -772,52 +796,81 @@ async fn fetch_url_download(
         global_uploads.push(now);
     }
 
-    let token = hex::encode(rand::random::<[u8; 8]>());
-    let dl_base = format!("/tmp/ytdl_{}", token);
-    let output_template = format!("{}.%(ext)s", dl_base);
+    let request_id = hex::encode(rand::random::<[u8; 8]>());
+    let ytdlp_dir = format!("/tmp/ytdl_{}", request_id);
+    let gallerydl_dir = format!("/tmp/gdl_{}", request_id);
+    let _ = fs::create_dir_all(&ytdlp_dir);
+    let _ = fs::create_dir_all(&gallerydl_dir);
 
-    let downloaded_ok = run_ytdlp_download(url, &output_template);
-    if !downloaded_ok {
-        if let Some(partial_path) = find_downloaded_file(&dl_base) {
-            let _ = fs::remove_file(&partial_path);
+    let ytdlp_url = url.to_string();
+    let ytdlp_dir_for_task = ytdlp_dir.clone();
+    let ytdlp_task = tokio::task::spawn_blocking(move || run_ytdlp_download(&ytdlp_url, &ytdlp_dir_for_task));
+
+    let gallerydl_url = url.to_string();
+    let gallerydl_dir_for_task = gallerydl_dir.clone();
+    let gallerydl_task = tokio::task::spawn_blocking(move || run_gallerydl_download(&gallerydl_url, &gallerydl_dir_for_task));
+
+    let (ytdlp_result, gallerydl_result) = tokio::join!(ytdlp_task, gallerydl_task);
+    let _ = ytdlp_result.unwrap_or(false);
+    let _ = gallerydl_result.unwrap_or(false);
+
+    let mut downloaded_files = list_downloaded_files(&ytdlp_dir);
+    downloaded_files.extend(list_downloaded_files(&gallerydl_dir));
+
+    if downloaded_files.is_empty() {
+        let _ = fs::remove_dir_all(&ytdlp_dir);
+        let _ = fs::remove_dir_all(&gallerydl_dir);
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Couldn't download media from that URL" }))).into_response();
+    }
+
+    let mut candidates = Vec::new();
+    let mut swept = false;
+
+    for downloaded_path in &downloaded_files {
+        let content_type = downloaded_path.extension()
+            .and_then(|e| e.to_str())
+            .and_then(content_type_for_extension)
+            .unwrap_or("video/mp4");
+
+        let candidate_token = hex::encode(rand::random::<[u8; 8]>());
+        let tmp_out = format!("/tmp/ytdl_out_{}.webp", candidate_token);
+        let converted = convert_to_webp(downloaded_path.to_str().unwrap(), &tmp_out, content_type, false);
+        let _ = fs::remove_file(&tmp_out);
+
+        let Some(final_data) = converted else {
+            continue;
+        };
+
+        let pending_path = PathBuf::from(format!("/tmp/pending_{}.webp", candidate_token));
+        if fs::write(&pending_path, &final_data).is_err() {
+            continue;
         }
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Couldn't download media from that URL" }))).into_response();
+
+        {
+            let mut pending = state.pending_downloads.lock().unwrap();
+            if !swept {
+                sweep_expired_pending(&mut pending);
+                swept = true;
+            }
+            pending.insert(candidate_token.clone(), (pending_path, std::time::Instant::now()));
+        }
+
+        candidates.push(serde_json::json!({
+            "token": candidate_token,
+            "previewUrl": format!("/api/pending/{}", candidate_token)
+        }));
     }
 
-    let Some(downloaded_path) = find_downloaded_file(&dl_base) else {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Couldn't download media from that URL" }))).into_response();
-    };
+    let _ = fs::remove_dir_all(&ytdlp_dir);
+    let _ = fs::remove_dir_all(&gallerydl_dir);
 
-    let content_type = downloaded_path.extension()
-        .and_then(|e| e.to_str())
-        .and_then(content_type_for_extension)
-        .unwrap_or("video/mp4");
-
-    let tmp_out = format!("/tmp/ytdl_out_{}.webp", token);
-    let converted = convert_to_webp(downloaded_path.to_str().unwrap(), &tmp_out, content_type, false);
-
-    let _ = fs::remove_file(&downloaded_path);
-    let _ = fs::remove_file(&tmp_out);
-
-    let Some(final_data) = converted else {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Couldn't convert downloaded video" }))).into_response();
-    };
-
-    let pending_path = PathBuf::from(format!("/tmp/pending_{}.webp", token));
-    if fs::write(&pending_path, &final_data).is_err() {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "Couldn't store preview" }))).into_response();
-    }
-
-    {
-        let mut pending = state.pending_downloads.lock().unwrap();
-        sweep_expired_pending(&mut pending);
-        pending.insert(token.clone(), (pending_path, std::time::Instant::now()));
+    if candidates.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Couldn't convert downloaded media" }))).into_response();
     }
 
     Json(serde_json::json!({
         "success": true,
-        "token": token,
-        "previewUrl": format!("/api/pending/{}", token)
+        "candidates": candidates
     })).into_response()
 }
 
@@ -1608,26 +1661,23 @@ mod tests {
     }
 
     #[test]
-    fn find_downloaded_file_locates_file_by_base_name_prefix() {
-        let dir = std::env::temp_dir();
-        let base = format!("test_find_{}", hex::encode(rand::random::<[u8; 4]>()));
-        let base_path = dir.join(&base);
-        let target = dir.join(format!("{}.mp4", base));
-        fs::write(&target, b"data").unwrap();
+    fn list_downloaded_files_returns_all_files_sorted() {
+        let dir = std::env::temp_dir().join(format!("test_list_{}", hex::encode(rand::random::<[u8; 4]>())));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("b.jpg"), b"2").unwrap();
+        fs::write(dir.join("a.jpg"), b"1").unwrap();
 
-        let found = find_downloaded_file(base_path.to_str().unwrap());
+        let files = list_downloaded_files(dir.to_str().unwrap());
 
-        assert_eq!(found, Some(target.clone()));
-        let _ = fs::remove_file(&target);
+        assert_eq!(files, vec![dir.join("a.jpg"), dir.join("b.jpg")]);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn find_downloaded_file_returns_none_when_nothing_matches() {
-        let dir = std::env::temp_dir();
-        let base = format!("test_find_missing_{}", hex::encode(rand::random::<[u8; 4]>()));
-        let base_path = dir.join(&base);
+    fn list_downloaded_files_returns_empty_for_missing_directory() {
+        let dir = std::env::temp_dir().join(format!("test_list_missing_{}", hex::encode(rand::random::<[u8; 4]>())));
 
-        assert_eq!(find_downloaded_file(base_path.to_str().unwrap()), None);
+        assert_eq!(list_downloaded_files(dir.to_str().unwrap()), Vec::<PathBuf>::new());
     }
 
     #[test]
