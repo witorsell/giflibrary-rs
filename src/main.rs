@@ -775,6 +775,9 @@ async fn fetch_url_download(
 
     let downloaded_ok = run_ytdlp_download(url, &output_template);
     if !downloaded_ok {
+        if let Some(partial_path) = find_downloaded_file(&dl_base) {
+            let _ = fs::remove_file(&partial_path);
+        }
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Couldn't download media from that URL" }))).into_response();
     }
 
