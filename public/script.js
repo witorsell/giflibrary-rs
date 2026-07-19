@@ -18,7 +18,7 @@ const selectedFileName = document.getElementById('selectedFileName');
 const confirmUploadBtn = document.getElementById('confirmUploadBtn');
 const uploadUrlInput = document.getElementById('uploadUrlInput');
 const fetchUrlBtn = document.getElementById('fetchUrlBtn');
-const urlPreviewImg = document.getElementById('urlPreviewImg');
+const urlCandidatesGrid = document.getElementById('urlCandidatesGrid');
 const fetchUrlLoader = document.getElementById('fetchUrlLoader');
 
 const loginModal = document.getElementById('loginModal');
@@ -411,6 +411,36 @@ if (uploadZone) {
   });
 }
 
+function renderUrlCandidates(candidates, url) {
+  urlCandidatesGrid.innerHTML = '';
+  pendingUrlToken = null;
+  confirmUploadBtn.disabled = candidates.length > 1;
+
+  candidates.forEach((candidate, index) => {
+    const thumb = document.createElement('img');
+    thumb.src = candidate.previewUrl;
+    thumb.dataset.token = candidate.token;
+    thumb.style.cssText = 'width: 90px; height: 90px; object-fit: cover; border-radius: 8px; cursor: pointer; border: 3px solid transparent;';
+    thumb.addEventListener('click', () => {
+      pendingUrlToken = candidate.token;
+      confirmUploadBtn.disabled = false;
+      urlCandidatesGrid.querySelectorAll('img').forEach(img => {
+        img.style.borderColor = img === thumb ? 'var(--text-primary)' : 'transparent';
+      });
+    });
+    if (candidates.length === 1) {
+      pendingUrlToken = candidate.token;
+      thumb.style.borderColor = 'var(--text-primary)';
+    }
+    urlCandidatesGrid.appendChild(thumb);
+  });
+  urlCandidatesGrid.style.display = 'flex';
+  selectedFileName.textContent = candidates.length > 1
+    ? `${url} (${candidates.length} items, pick one)`
+    : url;
+  uploadPreview.style.display = 'block';
+}
+
 if (fetchUrlBtn) {
   fetchUrlBtn.addEventListener('click', async () => {
     const url = uploadUrlInput.value.trim();
@@ -434,11 +464,7 @@ if (fetchUrlBtn) {
 
       if (res.ok && data.success) {
         pendingFile = null;
-        pendingUrlToken = data.token;
-        urlPreviewImg.src = data.previewUrl;
-        urlPreviewImg.style.display = 'block';
-        selectedFileName.textContent = url;
-        uploadPreview.style.display = 'block';
+        renderUrlCandidates(data.candidates, url);
       } else {
         showToast(data.error || 'Fetch failed');
       }
@@ -461,7 +487,8 @@ function previewFile(file) {
   }
   pendingFile = file;
   pendingUrlToken = null;
-  urlPreviewImg.style.display = 'none';
+  urlCandidatesGrid.style.display = 'none';
+  confirmUploadBtn.disabled = false;
   selectedFileName.textContent = file.name;
   uploadPreview.style.display = 'block';
 }
@@ -514,7 +541,7 @@ if (confirmUploadBtn) {
         uploadNsfwPills.forEach(pill => pill.classList.remove('active'));
         pendingFile = null;
         pendingUrlToken = null;
-        urlPreviewImg.style.display = 'none';
+        urlCandidatesGrid.style.display = 'none';
         loadGifs(true);
       } else {
         showToast('Upload failed');
