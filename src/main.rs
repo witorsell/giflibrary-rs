@@ -739,8 +739,12 @@ fn run_ytdlp_download(url: &str, dir: &str) -> bool {
 }
 
 fn run_gallerydl_download(url: &str, dir: &str) -> bool {
+    // videos=false scopes gallery-dl to photos only. yt-dlp (run concurrently
+    // alongside this) already owns video extraction; without this, a plain
+    // video post produces the same video as two separate candidates, one
+    // from each tool.
     let mut child = match Command::new("gallery-dl")
-        .args(["-D", dir, url])
+        .args(["-o", "videos=false", "-D", dir, url])
         .spawn()
     {
         Ok(c) => c,
