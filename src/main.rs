@@ -753,6 +753,11 @@ async fn fetch_url_download(
         return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "Unauthorized" }))).into_response();
     }
 
+    let url = payload.url.trim();
+    if url.is_empty() || !(url.starts_with("http://") || url.starts_with("https://")) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid URL" }))).into_response();
+    }
+
     {
         let mut global_uploads = state.global_uploads.lock().unwrap();
         let now = std::time::Instant::now();
@@ -762,11 +767,6 @@ async fn fetch_url_download(
             return (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": "Uploads temporarily disabled due to high volume" }))).into_response();
         }
         global_uploads.push(now);
-    }
-
-    let url = payload.url.trim();
-    if url.is_empty() || !(url.starts_with("http://") || url.starts_with("https://")) {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid URL" }))).into_response();
     }
 
     let token = hex::encode(rand::random::<[u8; 8]>());
