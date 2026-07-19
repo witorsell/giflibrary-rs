@@ -33,6 +33,7 @@ struct AppState {
     rate_limits: Arc<std::sync::Mutex<HashMap<String, Vec<std::time::Instant>>>>,
     global_uploads: Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
     cached_gifs: Arc<Mutex<Option<Vec<(String, i64, i64)>>>>,
+    pending_downloads: Arc<std::sync::Mutex<HashMap<String, (PathBuf, std::time::Instant)>>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -710,6 +711,110 @@ async fn finalize_upload(
     }
 }
 
+fn run_ytdlp_download(url: &str, output_template: &str) -> bool {
+    let mut child = match Command::new("yt-dlp")
+        .args(["-f", "bv*/b", "--no-playlist", "--max-filesize", "300M", "-o", output_template, url])
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(90);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct FetchUrlReq {
+    url: String,
+}
+
+async fn fetch_url_download(
+    jar: CookieJar,
+    State(state): State<AppState>,
+    Json(payload): Json<FetchUrlReq>,
+) -> impl IntoResponse {
+    if jar.get("auth_token").map(|c| c.value()) != Some(&state.master_key) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "Unauthorized" }))).into_response();
+    }
+
+    {
+        let mut global_uploads = state.global_uploads.lock().unwrap();
+        let now = std::time::Instant::now();
+        let one_hour = std::time::Duration::from_secs(3600);
+        global_uploads.retain(|t| now.duration_since(*t) < one_hour);
+        if global_uploads.len() >= 50 {
+            return (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": "Uploads temporarily disabled due to high volume" }))).into_response();
+        }
+        global_uploads.push(now);
+    }
+
+    let url = payload.url.trim();
+    if url.is_empty() || !(url.starts_with("http://") || url.starts_with("https://")) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Invalid URL" }))).into_response();
+    }
+
+    let token = hex::encode(rand::random::<[u8; 8]>());
+    let dl_base = format!("/tmp/ytdl_{}", token);
+    let output_template = format!("{}.%(ext)s", dl_base);
+
+    let downloaded_ok = run_ytdlp_download(url, &output_template);
+    if !downloaded_ok {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Couldn't download media from that URL" }))).into_response();
+    }
+
+    let Some(downloaded_path) = find_downloaded_file(&dl_base) else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Couldn't download media from that URL" }))).into_response();
+    };
+
+    let content_type = downloaded_path.extension()
+        .and_then(|e| e.to_str())
+        .and_then(content_type_for_extension)
+        .unwrap_or("video/mp4");
+
+    let tmp_out = format!("/tmp/ytdl_out_{}.webp", token);
+    let converted = convert_to_webp(downloaded_path.to_str().unwrap(), &tmp_out, content_type, false);
+
+    let _ = fs::remove_file(&downloaded_path);
+    let _ = fs::remove_file(&tmp_out);
+
+    let Some(final_data) = converted else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Couldn't convert downloaded video" }))).into_response();
+    };
+
+    let pending_path = PathBuf::from(format!("/tmp/pending_{}.webp", token));
+    if fs::write(&pending_path, &final_data).is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": "Couldn't store preview" }))).into_response();
+    }
+
+    {
+        let mut pending = state.pending_downloads.lock().unwrap();
+        sweep_expired_pending(&mut pending);
+        pending.insert(token.clone(), (pending_path, std::time::Instant::now()));
+    }
+
+    Json(serde_json::json!({
+        "success": true,
+        "token": token,
+        "previewUrl": format!("/api/pending/{}", token)
+    })).into_response()
+}
+
 async fn upload_gif(
     jar: CookieJar,
     State(state): State<AppState>,
@@ -1175,6 +1280,7 @@ async fn main() {
         rate_limits: Arc::new(std::sync::Mutex::new(HashMap::new())),
         global_uploads: Arc::new(std::sync::Mutex::new(Vec::new())),
         cached_gifs: Arc::new(Mutex::new(None)),
+        pending_downloads: Arc::new(std::sync::Mutex::new(HashMap::new())),
     };
     
     let app = Router::new()
@@ -1185,6 +1291,7 @@ async fn main() {
         .route("/media/{key}", get(media_proxy))
         .route("/gif/{slug}", get(serve_html))
         .route("/api/upload", post(upload_gif))
+        .route("/api/fetch-url", post(fetch_url_download))
         .route("/api/suggest", post(suggest_gif))
         .route("/api/suggestions", get(get_suggestions))
         .route("/api/suggestions/{key}/approve", post(approve_suggestion))
