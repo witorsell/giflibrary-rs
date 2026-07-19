@@ -54,7 +54,12 @@
           </div>
           <div id="uploadLoader" class="loader"></div>
         </div>
+        <div id="uploadUrlRow" style="display: flex; gap: 8px; margin: 12px 0;">
+          <input type="text" id="uploadUrlInput" class="input-field" placeholder="or paste a video URL (X/Twitter, etc.)" style="flex: 1;">
+          <button id="fetchUrlBtn" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px; width: auto; background: #fff; color: #000;">Fetch</button>
+        </div>
         <div id="uploadPreview" style="display:none; text-align: center; margin-bottom: 20px;">
+          <img id="urlPreviewImg" style="display:none; max-width: 200px; max-height: 120px; border-radius: 8px; margin: 0 auto 12px auto;">
           <span id="selectedFileName" style="color: var(--text-secondary); margin-right: 12px; font-size: 14px;"></span>
           <button id="confirmUploadBtn" class="btn btn-primary" style="padding: 8px 16px; font-size: 14px; width: auto; background: #fff; color: #000;">Upload Now</button>
         </div>

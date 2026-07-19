@@ -16,6 +16,9 @@ const uploadCaption = document.getElementById('uploadCaption');
 const uploadPreview = document.getElementById('uploadPreview');
 const selectedFileName = document.getElementById('selectedFileName');
 const confirmUploadBtn = document.getElementById('confirmUploadBtn');
+const uploadUrlInput = document.getElementById('uploadUrlInput');
+const fetchUrlBtn = document.getElementById('fetchUrlBtn');
+const urlPreviewImg = document.getElementById('urlPreviewImg');
 
 const loginModal = document.getElementById('loginModal');
 const loginForm = document.getElementById('loginForm');
@@ -44,6 +47,7 @@ let hasMore = true;
 let isLoading = false;
 let searchTimeout = null;
 let pendingFile = null;
+let pendingUrlToken = null;
 let pendingCategory = null;
 
 let enabledCategories;
@@ -406,6 +410,46 @@ if (uploadZone) {
   });
 }
 
+if (fetchUrlBtn) {
+  fetchUrlBtn.addEventListener('click', async () => {
+    const url = uploadUrlInput.value.trim();
+    if (!url) {
+      showToast('Enter a URL first');
+      return;
+    }
+
+    fetchUrlBtn.disabled = true;
+    uploadUrlInput.disabled = true;
+    fetchUrlBtn.textContent = 'Fetching...';
+
+    try {
+      const res = await fetch('/api/fetch-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      });
+      const data = await res.json();
+
+      if (res.ok && data.success) {
+        pendingFile = null;
+        pendingUrlToken = data.token;
+        urlPreviewImg.src = data.previewUrl;
+        urlPreviewImg.style.display = 'block';
+        selectedFileName.textContent = url;
+        uploadPreview.style.display = 'block';
+      } else {
+        showToast(data.error || 'Fetch failed');
+      }
+    } catch (err) {
+      showToast('Fetch error');
+    } finally {
+      fetchUrlBtn.disabled = false;
+      uploadUrlInput.disabled = false;
+      fetchUrlBtn.textContent = 'Fetch';
+    }
+  });
+}
+
 function previewFile(file) {
   const allowed = ['image/gif', 'image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime'];
   if (!allowed.includes(file.type)) {
@@ -413,27 +457,25 @@ function previewFile(file) {
     return;
   }
   pendingFile = file;
+  pendingUrlToken = null;
+  urlPreviewImg.style.display = 'none';
   selectedFileName.textContent = file.name;
   uploadPreview.style.display = 'block';
 }
 
 if (confirmUploadBtn) {
   confirmUploadBtn.addEventListener('click', async () => {
-    if (!pendingFile) return;
+    if (!pendingFile && !pendingUrlToken) return;
 
-    const formData = new FormData();
-    formData.append('gif', pendingFile);
+    let tagsVal = '';
     if (uploadTags) {
-      let tagsVal = uploadTags.value;
+      tagsVal = uploadTags.value;
       if (uploadCategories.size > 0) {
         const categoryTags = [...uploadCategories].join(', ');
         tagsVal = tagsVal ? tagsVal + ', ' + categoryTags : categoryTags;
       }
-      formData.append('tags', tagsVal);
     }
-    if (uploadCaption && uploadCaption.value.trim()) {
-      formData.append('caption', uploadCaption.value.trim());
-    }
+    const captionVal = (uploadCaption && uploadCaption.value.trim()) || '';
 
     uploadContent.style.display = 'none';
     uploadLoader.style.display = 'block';
@@ -442,18 +484,34 @@ if (confirmUploadBtn) {
     confirmUploadBtn.disabled = true;
 
     try {
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData
-      });
-      
+      let res;
+      if (pendingUrlToken) {
+        res = await fetch('/api/confirm-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: pendingUrlToken, tags: tagsVal, caption: captionVal })
+        });
+      } else {
+        const formData = new FormData();
+        formData.append('gif', pendingFile);
+        formData.append('tags', tagsVal);
+        if (captionVal) formData.append('caption', captionVal);
+        res = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData
+        });
+      }
+
       if (res.ok) {
         showToast('Uploaded successfully');
         if (uploadTags) uploadTags.value = '';
         if (uploadCaption) uploadCaption.value = '';
+        if (uploadUrlInput) uploadUrlInput.value = '';
         uploadCategories.clear();
         uploadNsfwPills.forEach(pill => pill.classList.remove('active'));
         pendingFile = null;
+        pendingUrlToken = null;
+        urlPreviewImg.style.display = 'none';
         loadGifs(true);
       } else {
         showToast('Upload failed');
