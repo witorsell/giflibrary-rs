@@ -127,13 +127,16 @@ fn save_suggestions_db(db: &HashMap<String, Suggestion>) {
 fn content_type_for_extension(ext: &str) -> Option<&'static str> {
     // webp is deliberately not mapped: convert_to_webp only takes the animated-webp
     // passthrough when is_animated is true, but callers of this function always pass
-    // is_animated: false, and yt-dlp's video-only format selector never produces a
-    // .webp file anyway.
+    // is_animated: false. Neither yt-dlp's video-only format selector nor gallery-dl's
+    // typical jpg/png photo output produces a .webp file in practice, so this stays
+    // unmapped rather than risk silently mishandling a hypothetical animated one.
     match ext.to_lowercase().as_str() {
         "mp4" | "m4v" => Some("video/mp4"),
         "webm" => Some("video/webm"),
         "mov" => Some("video/quicktime"),
         "gif" => Some("image/gif"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
         _ => None,
     }
 }
@@ -1439,6 +1442,13 @@ mod tests {
     #[test]
     fn content_type_for_extension_returns_none_for_unknown_extension() {
         assert_eq!(content_type_for_extension("exe"), None);
+    }
+
+    #[test]
+    fn content_type_for_extension_maps_known_photo_extensions() {
+        assert_eq!(content_type_for_extension("jpg"), Some("image/jpeg"));
+        assert_eq!(content_type_for_extension("JPEG"), Some("image/jpeg"));
+        assert_eq!(content_type_for_extension("png"), Some("image/png"));
     }
 
     #[test]
