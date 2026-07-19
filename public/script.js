@@ -19,6 +19,7 @@ const confirmUploadBtn = document.getElementById('confirmUploadBtn');
 const uploadUrlInput = document.getElementById('uploadUrlInput');
 const fetchUrlBtn = document.getElementById('fetchUrlBtn');
 const urlPreviewImg = document.getElementById('urlPreviewImg');
+const fetchUrlLoader = document.getElementById('fetchUrlLoader');
 
 const loginModal = document.getElementById('loginModal');
 const loginForm = document.getElementById('loginForm');
@@ -421,6 +422,7 @@ if (fetchUrlBtn) {
     fetchUrlBtn.disabled = true;
     uploadUrlInput.disabled = true;
     fetchUrlBtn.textContent = 'Fetching...';
+    if (fetchUrlLoader) fetchUrlLoader.style.display = 'block';
 
     try {
       const res = await fetch('/api/fetch-url', {
@@ -446,6 +448,7 @@ if (fetchUrlBtn) {
       fetchUrlBtn.disabled = false;
       uploadUrlInput.disabled = false;
       fetchUrlBtn.textContent = 'Fetch';
+      if (fetchUrlLoader) fetchUrlLoader.style.display = 'none';
     }
   });
 }
