@@ -709,8 +709,45 @@ async fn finalize_upload(
     }
 }
 
+// Twitter/X ids are Snowflake ids that embed a creation timestamp in their high
+// bits. A tweet's own attached media is uploaded within moments of posting the
+// tweet, but a quote-tweet's quoted post is a separate, pre-existing tweet whose
+// media was uploaded whenever that other tweet was made, usually much earlier.
+// Comparing snowflake timestamps lets us tell "this file is the tweet's own media"
+// from "this file is the quoted tweet's media" without any extra network calls.
+const TWITTER_SNOWFLAKE_EPOCH_MS: u64 = 1288834974657;
+const QUOTE_MEDIA_AGE_THRESHOLD_MS: u64 = 5 * 60 * 1000;
+
+fn snowflake_timestamp_ms(id: u64) -> u64 {
+    (id >> 22) + TWITTER_SNOWFLAKE_EPOCH_MS
+}
+
+fn is_quoted_tweet_media(tweet_id: u64, media_id: u64) -> bool {
+    snowflake_timestamp_ms(tweet_id).saturating_sub(snowflake_timestamp_ms(media_id)) > QUOTE_MEDIA_AGE_THRESHOLD_MS
+}
+
+fn extract_twitter_status_id(url: &str) -> Option<u64> {
+    let host_ok = ["://twitter.com/", "://www.twitter.com/", "://mobile.twitter.com/", "://x.com/", "://www.x.com/", "://mobile.x.com/"]
+        .iter()
+        .any(|host| url.contains(host));
+    if !host_ok {
+        return None;
+    }
+    let after = url.split("status/").nth(1)?;
+    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<u64>().ok()
+}
+
+fn extract_media_id_from_filename(path: &PathBuf) -> Option<u64> {
+    let stem = path.file_stem()?.to_str()?;
+    let (_, id_part) = stem.split_once('_')?;
+    id_part.parse::<u64>().ok()
+}
+
 fn run_ytdlp_download(url: &str, dir: &str) -> bool {
-    let output_template = format!("{}/%(autonumber)s.%(ext)s", dir);
+    // %(id)s is embedded so a quote-tweet's quoted-post media can be identified
+    // and filtered out afterwards; see is_quoted_tweet_media.
+    let output_template = format!("{}/%(autonumber)s_%(id)s.%(ext)s", dir);
     let mut child = match Command::new("yt-dlp")
         .args(["-f", "bv*/b", "--max-filesize", "300M", "-o", output_template.as_str(), url])
         .spawn()
@@ -818,7 +855,18 @@ async fn fetch_url_download(
     let _ = ytdlp_result.unwrap_or(false);
     let _ = gallerydl_result.unwrap_or(false);
 
-    let mut downloaded_files = list_downloaded_files(&ytdlp_dir);
+    let mut ytdlp_files = list_downloaded_files(&ytdlp_dir);
+    if let Some(tweet_id) = extract_twitter_status_id(url) {
+        ytdlp_files.retain(|path| match extract_media_id_from_filename(path) {
+            Some(media_id) if is_quoted_tweet_media(tweet_id, media_id) => {
+                let _ = fs::remove_file(path);
+                false
+            }
+            _ => true,
+        });
+    }
+
+    let mut downloaded_files = ytdlp_files;
     downloaded_files.extend(list_downloaded_files(&gallerydl_dir));
 
     if downloaded_files.is_empty() {
@@ -1450,6 +1498,46 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_quoted_tweet_media_keeps_media_uploaded_moments_before_tweet() {
+        // real ids from a quote-RT: the tweet's own attached video was uploaded
+        // ~5s before the tweet itself, well under the threshold.
+        let tweet_id = 2078403356280672523u64;
+        let own_media_id = 2078403334122192896u64;
+        assert!(!is_quoted_tweet_media(tweet_id, own_media_id));
+    }
+
+    #[test]
+    fn is_quoted_tweet_media_drops_media_from_the_quoted_post() {
+        // same tweet, but the quoted post's video, uploaded ~10 hours earlier.
+        let tweet_id = 2078403356280672523u64;
+        let quoted_media_id = 2078250025574879232u64;
+        assert!(is_quoted_tweet_media(tweet_id, quoted_media_id));
+    }
+
+    #[test]
+    fn extract_twitter_status_id_parses_x_and_twitter_urls() {
+        assert_eq!(extract_twitter_status_id("https://x.com/i/status/2078403356280672523"), Some(2078403356280672523));
+        assert_eq!(extract_twitter_status_id("https://twitter.com/someuser/status/123"), Some(123));
+    }
+
+    #[test]
+    fn extract_twitter_status_id_ignores_non_twitter_urls() {
+        assert_eq!(extract_twitter_status_id("https://example.com/status/123"), None);
+    }
+
+    #[test]
+    fn extract_media_id_from_filename_parses_autonumber_id_stem() {
+        let path = PathBuf::from("/tmp/ytdl_abc/00002_2078250025574879232.mp4");
+        assert_eq!(extract_media_id_from_filename(&path), Some(2078250025574879232));
+    }
+
+    #[test]
+    fn extract_media_id_from_filename_none_without_underscore() {
+        let path = PathBuf::from("/tmp/ytdl_abc/00002.mp4");
+        assert_eq!(extract_media_id_from_filename(&path), None);
+    }
 
     #[test]
     fn gif_nsfw_categories_extracts_reserved_tags_case_insensitively() {
