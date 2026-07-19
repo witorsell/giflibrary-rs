@@ -717,23 +717,6 @@ async fn finalize_upload(
     }
 }
 
-// Twitter/X ids are Snowflake ids that embed a creation timestamp in their high
-// bits. A tweet's own attached media is uploaded within moments of posting the
-// tweet, but a quote-tweet's quoted post is a separate, pre-existing tweet whose
-// media was uploaded whenever that other tweet was made, usually much earlier.
-// Comparing snowflake timestamps lets us tell "this file is the tweet's own media"
-// from "this file is the quoted tweet's media" without any extra network calls.
-const TWITTER_SNOWFLAKE_EPOCH_MS: u64 = 1288834974657;
-const QUOTE_MEDIA_AGE_THRESHOLD_MS: u64 = 5 * 60 * 1000;
-
-fn snowflake_timestamp_ms(id: u64) -> u64 {
-    (id >> 22) + TWITTER_SNOWFLAKE_EPOCH_MS
-}
-
-fn is_quoted_tweet_media(tweet_id: u64, media_id: u64) -> bool {
-    snowflake_timestamp_ms(tweet_id).saturating_sub(snowflake_timestamp_ms(media_id)) > QUOTE_MEDIA_AGE_THRESHOLD_MS
-}
-
 fn extract_twitter_status_id(url: &str) -> Option<u64> {
     let host_ok = ["://twitter.com/", "://www.twitter.com/", "://mobile.twitter.com/", "://x.com/", "://www.x.com/", "://mobile.x.com/"]
         .iter()
@@ -746,16 +729,12 @@ fn extract_twitter_status_id(url: &str) -> Option<u64> {
     digits.parse::<u64>().ok()
 }
 
-fn extract_media_id_from_filename(path: &PathBuf) -> Option<u64> {
-    let stem = path.file_stem()?.to_str()?;
-    let (_, id_part) = stem.split_once('_')?;
-    id_part.parse::<u64>().ok()
+fn is_video_extension(ext: &str) -> bool {
+    matches!(ext.to_ascii_lowercase().as_str(), "mp4" | "m4v" | "webm" | "mov")
 }
 
 fn run_ytdlp_download(url: &str, dir: &str) -> bool {
-    // %(id)s is embedded so a quote-tweet's quoted-post media can be identified
-    // and filtered out afterwards; see is_quoted_tweet_media.
-    let output_template = format!("{}/%(autonumber)s_%(id)s.%(ext)s", dir);
+    let output_template = format!("{}/%(autonumber)s.%(ext)s", dir);
     let mut child = match Command::new("yt-dlp")
         .args(["-f", "bv*/b", "--max-filesize", "300M", "-o", output_template.as_str(), url])
         .stdout(Stdio::null())
@@ -785,13 +764,24 @@ fn run_ytdlp_download(url: &str, dir: &str) -> bool {
     }
 }
 
-fn run_gallerydl_download(url: &str, dir: &str) -> bool {
+fn run_gallerydl_download(url: &str, dir: &str, is_twitter: bool) -> bool {
     // videos=false scopes gallery-dl to photos only. yt-dlp (run concurrently
     // alongside this) already owns video extraction; without this, a plain
     // video post produces the same video as two separate candidates, one
-    // from each tool.
+    // from each tool. Twitter/X is the exception: gallery-dl's tweet extractor
+    // already excludes a quoted tweet's own media (it checks the real
+    // quoted_by_id_str API field, not a guess), so for twitter/x URLs we let it
+    // fetch video too and use that as the source of truth for what the tweet's
+    // OWN video actually is; see the quote-RT filtering in fetch_url_download.
+    let mut args = vec!["-D".to_string(), dir.to_string()];
+    if !is_twitter {
+        args.insert(0, "videos=false".to_string());
+        args.insert(0, "-o".to_string());
+    }
+    args.push(url.to_string());
+
     let mut child = match Command::new("gallery-dl")
-        .args(["-o", "videos=false", "-D", dir, url])
+        .args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -855,31 +845,66 @@ async fn fetch_url_download(
     let _ = fs::create_dir_all(&ytdlp_dir);
     let _ = fs::create_dir_all(&gallerydl_dir);
 
+    let is_twitter = extract_twitter_status_id(url).is_some();
+
     let ytdlp_url = url.to_string();
     let ytdlp_dir_for_task = ytdlp_dir.clone();
     let ytdlp_task = tokio::task::spawn_blocking(move || run_ytdlp_download(&ytdlp_url, &ytdlp_dir_for_task));
 
     let gallerydl_url = url.to_string();
     let gallerydl_dir_for_task = gallerydl_dir.clone();
-    let gallerydl_task = tokio::task::spawn_blocking(move || run_gallerydl_download(&gallerydl_url, &gallerydl_dir_for_task));
+    let gallerydl_task = tokio::task::spawn_blocking(move || run_gallerydl_download(&gallerydl_url, &gallerydl_dir_for_task, is_twitter));
 
     let (ytdlp_result, gallerydl_result) = tokio::join!(ytdlp_task, gallerydl_task);
     let _ = ytdlp_result.unwrap_or(false);
     let _ = gallerydl_result.unwrap_or(false);
 
     let mut ytdlp_files = list_downloaded_files(&ytdlp_dir);
-    if let Some(tweet_id) = extract_twitter_status_id(url) {
-        ytdlp_files.retain(|path| match extract_media_id_from_filename(path) {
-            Some(media_id) if is_quoted_tweet_media(tweet_id, media_id) => {
+    let gallerydl_files = list_downloaded_files(&gallerydl_dir);
+
+    if is_twitter {
+        // A tweet can carry at most one video of its own; yt-dlp lists a tweet's
+        // own media before a quoted tweet's media (verified from yt-dlp's
+        // extractor source), so once we know whether the tweet's own video
+        // exists at all, we know exactly how much of yt-dlp's video output to
+        // keep. gallery-dl's tweet extractor is the one telling us that: it
+        // checks the tweet's real quoted_by_id_str field, not a guess, so if it
+        // downloaded a video here, that video belongs to the tweet itself.
+        let own_has_video = gallerydl_files.iter().any(|p| p.extension().and_then(|e| e.to_str()).map(is_video_extension).unwrap_or(false));
+
+        let mut kept_own_video = false;
+        ytdlp_files.retain(|path| {
+            let is_video = path.extension().and_then(|e| e.to_str()).map(is_video_extension).unwrap_or(false);
+            if !is_video {
+                return true;
+            }
+            if own_has_video && !kept_own_video {
+                kept_own_video = true;
+                true
+            } else {
                 let _ = fs::remove_file(path);
                 false
             }
-            _ => true,
+        });
+
+        // If that one kept file is byte-identical to something gallery-dl already
+        // downloaded, it's a redundant copy of the same video, not a distinct
+        // candidate; drop it in favor of gallery-dl's copy.
+        ytdlp_files.retain(|path| {
+            let Ok(ytdlp_bytes) = fs::read(path) else { return true };
+            let duplicate = gallerydl_files.iter().any(|gdl_path| {
+                fs::metadata(gdl_path).map(|m| m.len() as usize).unwrap_or(0) == ytdlp_bytes.len()
+                    && fs::read(gdl_path).map(|b| b == ytdlp_bytes).unwrap_or(false)
+            });
+            if duplicate {
+                let _ = fs::remove_file(path);
+            }
+            !duplicate
         });
     }
 
     let mut downloaded_files = ytdlp_files;
-    downloaded_files.extend(list_downloaded_files(&gallerydl_dir));
+    downloaded_files.extend(gallerydl_files);
 
     if downloaded_files.is_empty() {
         let _ = fs::remove_dir_all(&ytdlp_dir);
@@ -1511,27 +1536,9 @@ async fn main() {
 mod tests {
     use super::*;
 
-    // synthetic snowflake ids built from an arbitrary reference timestamp, not
-    // tied to any real tweet: a "tweet" id, its own media (uploaded 5s earlier,
-    // same as attaching media while composing), and a "quoted" media id (uploaded
-    // 10 hours earlier, same shape as quoting an older, unrelated tweet).
-    const TEST_TWEET_ID: u64 = 1724551110456246272;
-    const TEST_OWN_MEDIA_ID: u64 = 1724551089484726272;
-    const TEST_QUOTED_MEDIA_ID: u64 = 1724400115512246272;
-
-    #[test]
-    fn is_quoted_tweet_media_keeps_media_uploaded_moments_before_tweet() {
-        assert!(!is_quoted_tweet_media(TEST_TWEET_ID, TEST_OWN_MEDIA_ID));
-    }
-
-    #[test]
-    fn is_quoted_tweet_media_drops_media_from_the_quoted_post() {
-        assert!(is_quoted_tweet_media(TEST_TWEET_ID, TEST_QUOTED_MEDIA_ID));
-    }
-
     #[test]
     fn extract_twitter_status_id_parses_x_and_twitter_urls() {
-        assert_eq!(extract_twitter_status_id(&format!("https://x.com/i/status/{TEST_TWEET_ID}")), Some(TEST_TWEET_ID));
+        assert_eq!(extract_twitter_status_id("https://x.com/i/status/9876543210"), Some(9876543210));
         assert_eq!(extract_twitter_status_id("https://twitter.com/someuser/status/123"), Some(123));
     }
 
@@ -1541,15 +1548,17 @@ mod tests {
     }
 
     #[test]
-    fn extract_media_id_from_filename_parses_autonumber_id_stem() {
-        let path = PathBuf::from(format!("/tmp/ytdl_abc/00002_{TEST_QUOTED_MEDIA_ID}.mp4"));
-        assert_eq!(extract_media_id_from_filename(&path), Some(TEST_QUOTED_MEDIA_ID));
+    fn is_video_extension_matches_known_video_types_case_insensitively() {
+        for ext in ["mp4", "MP4", "m4v", "webm", "mov"] {
+            assert!(is_video_extension(ext), "expected {ext} to be a video extension");
+        }
     }
 
     #[test]
-    fn extract_media_id_from_filename_none_without_underscore() {
-        let path = PathBuf::from("/tmp/ytdl_abc/00002.mp4");
-        assert_eq!(extract_media_id_from_filename(&path), None);
+    fn is_video_extension_rejects_photo_and_unknown_types() {
+        for ext in ["jpg", "png", "webp", "gif", "txt"] {
+            assert!(!is_video_extension(ext), "expected {ext} to not be a video extension");
+        }
     }
 
     #[test]
