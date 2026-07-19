@@ -602,6 +602,67 @@ async fn media_proxy(Path(key): Path<String>, State(state): State<AppState>) -> 
     StatusCode::NOT_FOUND.into_response()
 }
 
+async fn finalize_upload(
+    state: &AppState,
+    mut final_data: Vec<u8>,
+    mut tags: Vec<String>,
+    caption: String,
+) -> axum::response::Response {
+    if !caption.is_empty() {
+        let cap_in = format!("/tmp/cap_in_{}.webp", hex::encode(rand::random::<[u8; 4]>()));
+        let cap_out = format!("/tmp/cap_out_{}.webp", hex::encode(rand::random::<[u8; 4]>()));
+        fs::write(&cap_in, &final_data).unwrap();
+
+        let captioned_ok = run_caption_script(&cap_in, &cap_out, &caption);
+        if captioned_ok {
+            if let Ok(captioned) = fs::read(&cap_out) {
+                final_data = captioned;
+                tags = merge_caption_tags(&tags, &caption);
+            }
+        }
+
+        let _ = fs::remove_file(&cap_in);
+        let _ = fs::remove_file(&cap_out);
+
+        if !captioned_ok {
+            return (StatusCode::BAD_REQUEST, "Captioning failed").into_response();
+        }
+    }
+
+    let key = format!("{}.webp", hex::encode(rand::random::<[u8; 8]>()));
+
+    let _guard = state.db_mutex.lock().await;
+
+    if let Ok(_) = state.s3.put_object()
+        .bucket(&state.bucket)
+        .key(&key)
+        .body(final_data.clone().into())
+        .content_type("image/webp")
+        .send().await
+    {
+        let mut db = get_db();
+        db.insert(key.clone(), tags.clone());
+        save_db(&db);
+
+        if let Ok(img) = image::load_from_memory(&final_data) {
+            let mut dims_db = get_dims_db();
+            dims_db.insert(key.clone(), Dim { w: img.width() as f64, h: img.height() as f64 });
+            save_dims_db(&dims_db);
+        }
+
+        *state.cached_gifs.lock().await = None;
+
+        Json(serde_json::json!({
+            "success": true,
+            "url": format!("{}/{}", state.r2_public_url, key),
+            "key": key,
+            "tags": tags
+        })).into_response()
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, "Upload failed").into_response()
+    }
+}
+
 async fn upload_gif(
     jar: CookieJar,
     State(state): State<AppState>,
@@ -660,64 +721,12 @@ async fn upload_gif(
     fs::write(&tmp_in, &data).unwrap();
     let is_animated = data.windows(4).any(|w| w == b"ANIM");
 
-    let mut final_data = convert_to_webp(&tmp_in, &tmp_out, &content_type, is_animated).unwrap_or_else(|| data.to_vec());
+    let final_data = convert_to_webp(&tmp_in, &tmp_out, &content_type, is_animated).unwrap_or_else(|| data.to_vec());
 
     let _ = fs::remove_file(&tmp_in);
     let _ = fs::remove_file(&tmp_out);
 
-    if !caption.is_empty() {
-        let cap_in = format!("/tmp/cap_in_{}.webp", hex::encode(rand::random::<[u8; 4]>()));
-        let cap_out = format!("/tmp/cap_out_{}.webp", hex::encode(rand::random::<[u8; 4]>()));
-        fs::write(&cap_in, &final_data).unwrap();
-
-        let captioned_ok = run_caption_script(&cap_in, &cap_out, &caption);
-        if captioned_ok {
-            if let Ok(captioned) = fs::read(&cap_out) {
-                final_data = captioned;
-                tags = merge_caption_tags(&tags, &caption);
-            }
-        }
-
-        let _ = fs::remove_file(&cap_in);
-        let _ = fs::remove_file(&cap_out);
-
-        if !captioned_ok {
-            return (StatusCode::BAD_REQUEST, "Captioning failed").into_response();
-        }
-    }
-
-    let key = format!("{}.webp", hex::encode(rand::random::<[u8; 8]>()));
-    
-    let _guard = state.db_mutex.lock().await;
-    
-    if let Ok(_) = state.s3.put_object()
-        .bucket(&state.bucket)
-        .key(&key)
-        .body(final_data.clone().into())
-        .content_type("image/webp")
-        .send().await 
-    {
-        let mut db = get_db();
-        db.insert(key.clone(), tags.clone());
-        save_db(&db);
-
-        if let Ok(img) = image::load_from_memory(&final_data) {
-            let mut dims_db = get_dims_db();
-            dims_db.insert(key.clone(), Dim { w: img.width() as f64, h: img.height() as f64 });
-            save_dims_db(&dims_db);
-        }
-
-        *state.cached_gifs.lock().await = None;
-
-        Json(serde_json::json!({
-            "success": true,
-            "url": format!("{}/{}", state.r2_public_url, key),
-            "key": key,
-            "tags": tags
-        })).into_response()
-    } else {
-        (StatusCode::INTERNAL_SERVER_ERROR, "Upload failed").into_response()
-    }
+    finalize_upload(&state, final_data, tags, caption).await
 }
 
 async fn suggest_gif(
