@@ -15,6 +15,7 @@ use std::{
     collections::HashMap,
     fs,
     net::SocketAddr,
+    path::PathBuf,
     process::Command,
     sync::Arc,
 };
@@ -133,6 +134,38 @@ fn content_type_for_extension(ext: &str) -> Option<&'static str> {
         "mov" => Some("video/quicktime"),
         "gif" => Some("image/gif"),
         _ => None,
+    }
+}
+
+fn find_downloaded_file(base_path: &str) -> Option<PathBuf> {
+    let base = std::path::Path::new(base_path);
+    let dir = base.parent()?;
+    let base_name = base.file_name()?.to_str()?;
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir).ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with(base_name))
+                .unwrap_or(false)
+        })
+        .collect();
+    entries.sort();
+    entries.into_iter().next()
+}
+
+fn sweep_expired_pending(pending: &mut HashMap<String, (PathBuf, std::time::Instant)>) {
+    let now = std::time::Instant::now();
+    let expiry = std::time::Duration::from_secs(600);
+    let expired: Vec<String> = pending.iter()
+        .filter(|(_, (_, created))| now.duration_since(*created) > expiry)
+        .map(|(k, _)| k.clone())
+        .collect();
+    for key in expired {
+        if let Some((path, _)) = pending.remove(&key) {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -1381,5 +1414,51 @@ mod tests {
             vec!["bro", "hello", "caption", "sexual", "nsfw"]
                 .into_iter().map(String::from).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn find_downloaded_file_locates_file_by_base_name_prefix() {
+        let dir = std::env::temp_dir();
+        let base = format!("test_find_{}", hex::encode(rand::random::<[u8; 4]>()));
+        let base_path = dir.join(&base);
+        let target = dir.join(format!("{}.mp4", base));
+        fs::write(&target, b"data").unwrap();
+
+        let found = find_downloaded_file(base_path.to_str().unwrap());
+
+        assert_eq!(found, Some(target.clone()));
+        let _ = fs::remove_file(&target);
+    }
+
+    #[test]
+    fn find_downloaded_file_returns_none_when_nothing_matches() {
+        let dir = std::env::temp_dir();
+        let base = format!("test_find_missing_{}", hex::encode(rand::random::<[u8; 4]>()));
+        let base_path = dir.join(&base);
+
+        assert_eq!(find_downloaded_file(base_path.to_str().unwrap()), None);
+    }
+
+    #[test]
+    fn sweep_expired_pending_removes_old_entries_and_deletes_their_files() {
+        let dir = std::env::temp_dir();
+        let old_path = dir.join(format!("sweep_test_old_{}.webp", hex::encode(rand::random::<[u8; 4]>())));
+        fs::write(&old_path, b"data").unwrap();
+
+        let mut pending = HashMap::new();
+        pending.insert(
+            "old-token".to_string(),
+            (old_path.clone(), std::time::Instant::now() - std::time::Duration::from_secs(700)),
+        );
+        pending.insert(
+            "fresh-token".to_string(),
+            (dir.join("unused.webp"), std::time::Instant::now()),
+        );
+
+        sweep_expired_pending(&mut pending);
+
+        assert!(!pending.contains_key("old-token"));
+        assert!(pending.contains_key("fresh-token"));
+        assert!(!old_path.exists());
     }
 }
