@@ -818,6 +818,75 @@ async fn fetch_url_download(
     })).into_response()
 }
 
+async fn get_pending_download(
+    jar: CookieJar,
+    Path(token): Path<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    if jar.get("auth_token").map(|c| c.value()) != Some(&state.master_key) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    let path = {
+        let pending = state.pending_downloads.lock().unwrap();
+        pending.get(&token).map(|(path, _)| path.clone())
+    };
+
+    let Some(path) = path else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    match fs::read(&path) {
+        Ok(bytes) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, "image/webp".parse().unwrap());
+            (headers, bytes).into_response()
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ConfirmUrlReq {
+    token: String,
+    #[serde(default)]
+    tags: String,
+    #[serde(default)]
+    caption: String,
+}
+
+async fn confirm_url_download(
+    jar: CookieJar,
+    State(state): State<AppState>,
+    Json(payload): Json<ConfirmUrlReq>,
+) -> impl IntoResponse {
+    if jar.get("auth_token").map(|c| c.value()) != Some(&state.master_key) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "Unauthorized" }))).into_response();
+    }
+
+    let path = {
+        let mut pending = state.pending_downloads.lock().unwrap();
+        pending.remove(&payload.token).map(|(path, _)| path)
+    };
+
+    let Some(path) = path else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Preview expired, fetch again" }))).into_response();
+    };
+
+    let Ok(final_data) = fs::read(&path) else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": "Preview expired, fetch again" }))).into_response();
+    };
+    let _ = fs::remove_file(&path);
+
+    let tags: Vec<String> = payload.tags.split(',')
+        .map(|s: &str| s.trim().to_lowercase())
+        .filter(|s: &String| !s.is_empty())
+        .collect();
+    let caption = payload.caption.trim().to_string();
+
+    finalize_upload(&state, final_data, tags, caption).await
+}
+
 async fn upload_gif(
     jar: CookieJar,
     State(state): State<AppState>,
@@ -1295,6 +1364,8 @@ async fn main() {
         .route("/gif/{slug}", get(serve_html))
         .route("/api/upload", post(upload_gif))
         .route("/api/fetch-url", post(fetch_url_download))
+        .route("/api/pending/{token}", get(get_pending_download))
+        .route("/api/confirm-url", post(confirm_url_download))
         .route("/api/suggest", post(suggest_gif))
         .route("/api/suggestions", get(get_suggestions))
         .route("/api/suggestions/{key}/approve", post(approve_suggestion))
