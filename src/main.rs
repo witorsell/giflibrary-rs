@@ -122,6 +122,16 @@ fn save_suggestions_db(db: &HashMap<String, Suggestion>) {
     }
 }
 
+fn content_type_for_extension(ext: &str) -> Option<&'static str> {
+    match ext.to_lowercase().as_str() {
+        "mp4" | "m4v" => Some("video/mp4"),
+        "webm" => Some("video/webm"),
+        "mov" => Some("video/quicktime"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    }
+}
+
 fn convert_to_webp(tmp_in: &str, tmp_out: &str, content_type: &str, is_animated: bool) -> Option<Vec<u8>> {
     if content_type == "image/webp" && is_animated {
         let _ = fs::copy(tmp_in, tmp_out);
@@ -1198,6 +1208,19 @@ mod tests {
             parse_enabled_categories(Some("suggestive,bogus")),
             vec!["suggestive".to_string()]
         );
+    }
+
+    #[test]
+    fn content_type_for_extension_maps_known_video_extensions() {
+        assert_eq!(content_type_for_extension("mp4"), Some("video/mp4"));
+        assert_eq!(content_type_for_extension("webm"), Some("video/webm"));
+        assert_eq!(content_type_for_extension("MOV"), Some("video/quicktime"));
+        assert_eq!(content_type_for_extension("gif"), Some("image/gif"));
+    }
+
+    #[test]
+    fn content_type_for_extension_returns_none_for_unknown_extension() {
+        assert_eq!(content_type_for_extension("exe"), None);
     }
 
     #[test]
