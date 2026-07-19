@@ -123,6 +123,10 @@ fn save_suggestions_db(db: &HashMap<String, Suggestion>) {
 }
 
 fn content_type_for_extension(ext: &str) -> Option<&'static str> {
+    // webp is deliberately not mapped: convert_to_webp only takes the animated-webp
+    // passthrough when is_animated is true, but callers of this function always pass
+    // is_animated: false, and yt-dlp's video-only format selector never produces a
+    // .webp file anyway.
     match ext.to_lowercase().as_str() {
         "mp4" | "m4v" => Some("video/mp4"),
         "webm" => Some("video/webm"),
